@@ -1,0 +1,7 @@
+MYSQL_STORAGE_ENGINE(vp,,[Vertical Partitioning Storage Engine],
+  [Table vertical partitioning],
+  [max,max-no-ndb])
+MYSQL_PLUGIN_DIRECTORY(vp, [storage/vp])
+MYSQL_PLUGIN_STATIC(vp,  [libvp.a])
+MYSQL_PLUGIN_DYNAMIC(vp, [ha_vp.la])
+
