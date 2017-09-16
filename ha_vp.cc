@@ -4354,9 +4354,7 @@ void ha_vp::ft_end()
         error_num = error_num2;
     }
   }
-#ifdef HANDLER_HAS_HA_FT_END
-  ha_ft_end();
-#endif
+  handler::ft_end();
   DBUG_VOID_RETURN;
 }
 
