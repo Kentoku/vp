@@ -17,6 +17,10 @@
 #pragma interface
 #endif
 
+#if (defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100203)
+#define HANDLER_HAS_HA_FT_END
+#endif
+
 #if (defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100000)
 #define VP_HANDLER_START_BULK_INSERT_HAS_FLAGS
 #endif
