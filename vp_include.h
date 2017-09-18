@@ -62,7 +62,7 @@
 #define my_sprintf(A,B) sprintf B
 #endif
 
-#if defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100206
+#if defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100204
 #define VP_FIELD_BLOB_GET_PTR_RETURNS_UCHAR_PTR
 #endif
 
