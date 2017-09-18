@@ -70,6 +70,7 @@
 #endif
 
 #if defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100200
+#define VP_WITHOUT_HA_STATISTIC_INCREMENT
 #define VP_HAS_NEXT_THREAD_ID
 #define VP_set_next_thread_id(A)
 #define VP_new_THD(A) (new THD(A))

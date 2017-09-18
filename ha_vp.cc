@@ -5101,7 +5101,9 @@ int ha_vp::write_row(
     }
   } else {
 #endif
+#ifndef VP_WITHOUT_HA_STATISTIC_INCREMENT
     ha_statistic_increment(&SSV::ha_write_count);
+#endif
 #ifdef VP_TABLE_HAS_TIMESTAMP_FIELD_TYPE
     if (table->timestamp_field_type & TIMESTAMP_AUTO_SET_ON_INSERT)
       table->timestamp_field->set_time();
@@ -5427,7 +5429,9 @@ int ha_vp::pre_write_row(
   DBUG_ENTER("ha_vp::pre_write_row");
   DBUG_PRINT("info",("vp this=%p", this));
   dup_table_idx = share->table_count;
+#ifndef VP_WITHOUT_HA_STATISTIC_INCREMENT
   ha_statistic_increment(&SSV::ha_write_count);
+#endif
 #ifdef VP_TABLE_HAS_TIMESTAMP_FIELD_TYPE
   if (table->timestamp_field_type & TIMESTAMP_AUTO_SET_ON_INSERT)
     table->timestamp_field->set_time();
@@ -5680,7 +5684,9 @@ int ha_vp::bulk_update_row(
   bgi_mode = vp_param_bgi_mode(thd, share->bgi_mode);
   VP_BG_BASE *base;
 #endif
+#ifndef VP_WITHOUT_HA_STATISTIC_INCREMENT
   ha_statistic_increment(&SSV::ha_update_count);
+#endif
 #ifdef VP_TABLE_HAS_TIMESTAMP_FIELD_TYPE
   if (table->timestamp_field_type & TIMESTAMP_AUTO_SET_ON_UPDATE)
     table->timestamp_field->set_time();
@@ -6585,7 +6591,9 @@ int ha_vp::delete_row(
   bgu_mode = vp_param_bgu_mode(thd, share->bgu_mode);
   VP_BG_BASE *base;
 #endif
+#ifndef VP_WITHOUT_HA_STATISTIC_INCREMENT
   ha_statistic_increment(&SSV::ha_delete_count);
+#endif
   if (!init_del_bitmap)
   {
     for (roop_count = 0; roop_count < share->table_count; roop_count++)
