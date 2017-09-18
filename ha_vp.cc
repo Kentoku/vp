@@ -8878,7 +8878,11 @@ int ha_vp::get_child_record_by_idx(
               )
             ) {
               uchar *tmp_char;
+#ifdef VP_FIELD_BLOB_GET_PTR_RETURNS_UCHAR_PTR
+              tmp_char = ((Field_blob *)field2)->get_ptr();
+#else
               ((Field_blob *)field2)->get_ptr(&tmp_char);
+#endif
               ((Field_blob *)field)->set_ptr(
                 ((Field_blob *)field2)->get_length(), tmp_char);
             } else {
