@@ -4759,7 +4759,7 @@ const char *ha_vp::table_type() const
 #if MYSQL_VERSION_ID < 50500
 static ulonglong vp_table_flags_msm = 0;
 #else
-#ifdef HTON_CAN_MULTISTEP_MERGE
+#ifdef HA_CAN_MULTISTEP_MERGE
 static ulonglong vp_table_flags_msm = HA_CAN_MULTISTEP_MERGE;
 #else
 static ulonglong vp_table_flags_msm = 0;
