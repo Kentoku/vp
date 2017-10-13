@@ -17,8 +17,9 @@
 #define VP_HEX_VERSION 0x0101
 
 #if MYSQL_VERSION_ID < 50500
+#define vp_my_free(A,B) my_free(A,B)
 #else
-#define my_free(A,B) my_free(A)
+#define vp_my_free(A,B) my_free(A)
 #ifdef pthread_mutex_t
 #undef pthread_mutex_t
 #endif
@@ -72,6 +73,10 @@
 #define HANDLER_HAS_PRUNE_PARTITIONS_FOR_CHILD
 #define HANDLER_HAS_GET_NEXT_GLOBAL_FOR_CHILD
 #define HANDLER_HAS_CHECK_AND_SET_BITMAP_FOR_UPDATE
+#else
+#ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS
+#define HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
+#endif
 #endif
 
 #if defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100203
@@ -181,6 +186,7 @@ inline void VP_set_next_thread_id(THD *A)
         memcpy(value, str.ptr(), length); \
         value[length] = '\0'; \
         DBUG_PRINT("info", ("vp value = %s", value)); \
+        my_afree(value); \
       } \
       field->move_field_offset(-ptr_diff); \
     } \

@@ -465,12 +465,12 @@ set_default:
     goto error;
 
   if (param_string)
-    my_free(param_string, MYF(0));
+    vp_my_free(param_string, MYF(0));
   DBUG_RETURN(0);
 
 error:
   if (param_string)
-    my_free(param_string, MYF(0));
+    vp_my_free(param_string, MYF(0));
 error_alloc_param_string:
   DBUG_RETURN(error_num);
 }
@@ -536,14 +536,14 @@ void vp_udf_free_copy_tables_alloc(
 ) {
   DBUG_ENTER("vp_udf_free_copy_tables_alloc");
   if (copy_tables->db_names[0])
-    my_free(copy_tables->db_names[0], MYF(0));
+    vp_my_free(copy_tables->db_names[0], MYF(0));
   if (copy_tables->default_database)
-    my_free(copy_tables->default_database, MYF(0));
+    vp_my_free(copy_tables->default_database, MYF(0));
   if (copy_tables->table_name_prefix)
-    my_free(copy_tables->table_name_prefix, MYF(0));
+    vp_my_free(copy_tables->table_name_prefix, MYF(0));
   if (copy_tables->table_name_suffix)
-    my_free(copy_tables->table_name_suffix, MYF(0));
-  my_free(copy_tables, MYF(0));
+    vp_my_free(copy_tables->table_name_suffix, MYF(0));
+  vp_my_free(copy_tables, MYF(0));
   DBUG_VOID_RETURN;
 }
 
@@ -1148,7 +1148,7 @@ first_close:
       DBUG_PRINT("info",("vp restart"));
       restart = TRUE;
       part_idx = -1;
-      my_free(src_bitmap, MYF(0));
+      vp_my_free(src_bitmap, MYF(0));
       src_bitmap = NULL;
       goto change_table_version;
     }
@@ -1195,7 +1195,7 @@ end:
 #endif
   close_thread_tables(thd);
   if (src_bitmap)
-    my_free(src_bitmap, MYF(0));
+    vp_my_free(src_bitmap, MYF(0));
   if (copy_tables)
     vp_udf_free_copy_tables_alloc(copy_tables);
   DBUG_RETURN(1);
@@ -1214,7 +1214,7 @@ error:
 #endif
   close_thread_tables(thd);
   if (src_bitmap)
-    my_free(src_bitmap, MYF(0));
+    vp_my_free(src_bitmap, MYF(0));
   if (copy_tables)
     vp_udf_free_copy_tables_alloc(copy_tables);
   *error = 1;

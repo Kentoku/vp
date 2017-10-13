@@ -162,21 +162,21 @@ int vp_free_share_alloc(
 ) {
   DBUG_ENTER("vp_free_share_alloc");
   if (share->tgt_default_db_name)
-    my_free(share->tgt_default_db_name, MYF(0));
+    vp_my_free(share->tgt_default_db_name, MYF(0));
   if (share->tgt_table_name_list)
-    my_free(share->tgt_table_name_list, MYF(0));
+    vp_my_free(share->tgt_table_name_list, MYF(0));
   if (share->tgt_table_name_prefix)
-    my_free(share->tgt_table_name_prefix, MYF(0));
+    vp_my_free(share->tgt_table_name_prefix, MYF(0));
   if (share->tgt_table_name_suffix)
-    my_free(share->tgt_table_name_suffix, MYF(0));
+    vp_my_free(share->tgt_table_name_suffix, MYF(0));
   if (share->choose_ignore_table_list)
-    my_free(share->choose_ignore_table_list, MYF(0));
+    vp_my_free(share->choose_ignore_table_list, MYF(0));
   if (share->choose_ignore_table_list_for_lock)
-    my_free(share->choose_ignore_table_list_for_lock, MYF(0));
+    vp_my_free(share->choose_ignore_table_list_for_lock, MYF(0));
   if (share->tgt_db_name)
-    my_free(share->tgt_db_name, MYF(0));
+    vp_my_free(share->tgt_db_name, MYF(0));
   if (share->correspond_columns_p)
-    my_free(share->correspond_columns_p, MYF(0));
+    vp_my_free(share->correspond_columns_p, MYF(0));
 #ifdef WITH_PARTITION_STORAGE_ENGINE
   if (share->partition_share)
     vp_free_pt_share(share->partition_share);
@@ -412,7 +412,7 @@ int vp_parse_table_info(
   {
     if (comment_string)
     {
-      my_free(comment_string, MYF(0));
+      vp_my_free(comment_string, MYF(0));
       comment_string = NULL;
     }
     switch (roop_count)
@@ -701,12 +701,12 @@ int vp_parse_table_info(
   }
 
   if (comment_string)
-    my_free(comment_string, MYF(0));
+    vp_my_free(comment_string, MYF(0));
   DBUG_RETURN(0);
 
 error:
   if (comment_string)
-    my_free(comment_string, MYF(0));
+    vp_my_free(comment_string, MYF(0));
 error_alloc_comment_string:
   DBUG_RETURN(error_num);
 }
@@ -951,7 +951,7 @@ error_init_mutex:
 error_create_table_list:
 error_parse_comment_string:
   vp_free_share_alloc(share);
-  my_free(share, MYF(0));
+  vp_my_free(share, MYF(0));
 error_alloc_share:
   pthread_mutex_unlock(&vp_tbl_mutex);
   DBUG_RETURN(NULL);
@@ -969,7 +969,7 @@ int vp_free_share(
     thr_lock_delete(&share->lock);
     pthread_mutex_destroy(&share->init_mutex);
     pthread_mutex_destroy(&share->mutex);
-    my_free(share, MYF(0));
+    vp_my_free(share, MYF(0));
   }
   pthread_mutex_unlock(&vp_tbl_mutex);
   DBUG_RETURN(0);
@@ -1044,7 +1044,7 @@ error_hash_insert:
 error_init_pt_handler_hash:
   pthread_mutex_destroy(&partition_share->pt_handler_mutex);
 error_init_pt_handler_mutex:
-  my_free(partition_share, MYF(0));
+  vp_my_free(partition_share, MYF(0));
 error_alloc_share:
   pthread_mutex_unlock(&vp_pt_share_mutex);
   DBUG_RETURN(NULL);
@@ -1060,7 +1060,7 @@ int vp_free_pt_share(
     my_hash_delete(&vp_open_pt_share, (uchar*) partition_share);
     my_hash_free(&partition_share->pt_handler_hash);
     pthread_mutex_destroy(&partition_share->pt_handler_mutex);
-    my_free(partition_share, MYF(0));
+    vp_my_free(partition_share, MYF(0));
   }
   pthread_mutex_unlock(&vp_pt_share_mutex);
   DBUG_RETURN(0);
@@ -1218,6 +1218,9 @@ int vp_db_init(
 #endif
 #ifdef HTON_CAN_MULTISTEP_MERGE
   vp_hton->flags |= HTON_CAN_MULTISTEP_MERGE;
+#endif
+#ifdef HTON_CAN_READ_CONNECT_STRING_IN_PARTITION
+  vp_hton->flags |= HTON_CAN_READ_CONNECT_STRING_IN_PARTITION;
 #endif
   /* vp_hton->db_type = DB_TYPE_VP; */
   /*
@@ -1434,6 +1437,8 @@ int vp_create_table_list(
   int table_count, roop_count, length;
   char *tmp_ptr, *tmp_ptr2, *tmp_ptr3, *tmp_name_ptr, *tmp_path_ptr;
   DBUG_ENTER("vp_create_table_list");
+  DBUG_PRINT("info",("vp tgt_table_name_list=%s",
+    share->tgt_table_name_list));
   table_count = 1;
   tmp_ptr = share->tgt_table_name_list;
   while (*tmp_ptr == ' ')
@@ -1614,7 +1619,7 @@ int vp_correspond_columns(
     if (correspond_flag)
       share->reinit = FALSE;
     else
-      my_free(share->correspond_columns_p, MYF(0));
+      vp_my_free(share->correspond_columns_p, MYF(0));
   }
 
   if (!share->init || share->reinit)
@@ -2314,7 +2319,7 @@ error_auto_inc_correspond:
 error_key_correspond:
 error_column_correspond:
 error_table_correspond:
-  my_free(correspond_columns_p, MYF(0));
+  vp_my_free(correspond_columns_p, MYF(0));
 error_alloc:
   pthread_mutex_unlock(&share->init_mutex);
   DBUG_RETURN(error_num);
