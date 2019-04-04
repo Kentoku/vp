@@ -1,4 +1,5 @@
-/* Copyright (C) 2009-2015 Kentoku Shiba
+/* Copyright (C) 2009-2019 Kentoku Shiba
+   Copyright (C) 2019 MariaDB corp
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -20,6 +21,7 @@
 #define MYSQL_SERVER 1
 #include <my_global.h>
 #include "mysql_version.h"
+#include "vp_environ.h"
 #if MYSQL_VERSION_ID < 50500
 #include "mysql_priv.h"
 #include <mysql/plugin.h>
@@ -40,9 +42,36 @@
 #include "ha_vp.h"
 #include "vp_table.h"
 
-#define VP_CAN_BG_SEARCH (LL(1) << 37)
-#define VP_CAN_BG_INSERT (LL(1) << 38)
-#define VP_CAN_BG_UPDATE (LL(1) << 39)
+#ifdef HA_CAN_BG_SEARCH
+#define VP_CAN_BG_SEARCH HA_CAN_BG_SEARCH
+#else
+#define VP_CAN_BG_SEARCH 0
+#endif
+#ifdef HA_CAN_BG_INSERT
+#define VP_CAN_BG_INSERT HA_CAN_BG_INSERT
+#else
+#define VP_CAN_BG_INSERT 0
+#endif
+#ifdef HA_CAN_BG_UPDATE
+#define VP_CAN_BG_UPDATE HA_CAN_BG_UPDATE
+#else
+#define VP_CAN_BG_UPDATE 0
+#endif
+
+static longlong vp_base_table_flags =
+  (
+    HA_HAS_RECORDS |
+    HA_BINLOG_ROW_CAPABLE |
+    HA_BINLOG_STMT_CAPABLE |
+#ifdef HA_CAN_BULK_ACCESS
+    HA_CAN_BULK_ACCESS |
+#endif
+#ifdef HA_CAN_DIRECT_UPDATE_AND_DELETE
+    HA_CAN_DIRECT_UPDATE_AND_DELETE |
+#endif
+    VP_CAN_BG_SEARCH | VP_CAN_BG_INSERT | VP_CAN_BG_UPDATE
+  );
+
 
 extern handlerton *vp_hton_ptr;
 #ifndef WITHOUT_VP_BG_ACCESS
@@ -70,6 +99,10 @@ ha_vp::ha_vp(
   , bulk_access_info_exec_tgt(NULL)
   , bulk_access_exec_bitmap(NULL)
 #endif
+#ifdef HANDLER_HAS_GET_NEXT_GLOBAL_FOR_CHILD
+  , handler_close(FALSE)
+#endif
+  , mr_init(FALSE)
 {
   DBUG_ENTER("ha_vp::ha_vp");
   DBUG_PRINT("info",("vp this=%p", this));
@@ -77,12 +110,11 @@ ha_vp::ha_vp(
   part_tables = NULL;
   use_tables = NULL;
   work_bitmap = NULL;
-  blob_buff = NULL;
   ref_length = 0;
 #ifdef HANDLER_HAS_TOP_TABLE_FIELDS
   allocated_top_table_fields = 0;
 #endif
-  additional_table_flags = 0;
+  additional_table_flags = vp_base_table_flags;
   ins_child_bitmaps[0] = NULL;
   condition = NULL;
 #ifdef WITH_PARTITION_STORAGE_ENGINE
@@ -127,6 +159,10 @@ ha_vp::ha_vp(
   , bulk_access_info_exec_tgt(NULL)
   , bulk_access_exec_bitmap(NULL)
 #endif
+#ifdef HANDLER_HAS_GET_NEXT_GLOBAL_FOR_CHILD
+  , handler_close(FALSE)
+#endif
+  , mr_init(FALSE)
 {
   DBUG_ENTER("ha_vp::ha_vp");
   DBUG_PRINT("info",("vp this=%p", this));
@@ -134,11 +170,10 @@ ha_vp::ha_vp(
   part_tables = NULL;
   use_tables = NULL;
   work_bitmap = NULL;
-  blob_buff = NULL;
 #ifdef HANDLER_HAS_TOP_TABLE_FIELDS
   allocated_top_table_fields = 0;
 #endif
-  additional_table_flags = 0;
+  additional_table_flags = vp_base_table_flags;
   ins_child_bitmaps[0] = NULL;
   condition = NULL;
 #ifdef WITH_PARTITION_STORAGE_ENGINE
@@ -236,6 +271,7 @@ int ha_vp::open(
   DBUG_PRINT("info",("vp sql_command=%u", sql_command));
   ref_buf = NULL;
   ref_buf_length = 0;
+  VP_INIT_ALLOC_ROOT(&mr, 1024, 0, MYF(MY_WME));
 
   if (!vp_get_share(name, table, thd, this, &error_num))
     goto error_get_share;
@@ -541,7 +577,7 @@ int ha_vp::open(
   DBUG_PRINT("info",("vp blob_fields=%d", table_share->blob_fields));
   if (table_share->blob_fields)
   {
-    if (!(blob_buff = new String[table_share->fields]))
+    if (!(blob_buff = new (&mr) String[table_share->fields]))
     {
       error_num = HA_ERR_OUT_OF_MEM;
       goto error_init_blob_buff;
@@ -704,10 +740,8 @@ int ha_vp::open(
 error:
 error_clone:
   if (clone_tables)
-    my_free(clone_tables, MYF(0));
+    vp_my_free(clone_tables, MYF(0));
 error_clone_tables_alloc:
-  delete [] blob_buff;
-  blob_buff = NULL;
 error_init_blob_buff:
 #ifdef WITH_PARTITION_STORAGE_ENGINE
   if (
@@ -730,7 +764,7 @@ error_hash_insert:
   partition_handler_share = NULL;
   pt_handler_share_creator = NULL;
 #endif
-  my_free(part_tables, MYF(0));
+  vp_my_free(part_tables, MYF(0));
   part_tables = NULL;
 #ifdef VP_SUPPORT_MRR
   m_range_info = NULL;
@@ -780,7 +814,7 @@ int ha_vp::close()
         do {
           tmp_mrr_range_current = tmp_mrr_range_first;
           tmp_mrr_range_first = tmp_mrr_range_first->next;
-          my_free(tmp_mrr_range_current, MYF(0));
+          vp_my_free(tmp_mrr_range_current, MYF(0));
         } while (tmp_mrr_range_first);
       }
     }
@@ -792,15 +826,15 @@ int ha_vp::close()
       m_mrr_range_current = m_mrr_range_first;
       m_mrr_range_first = m_mrr_range_first->next;
       if (m_mrr_range_current->key[0])
-        my_free(m_mrr_range_current->key[0], MYF(0));
+        vp_my_free(m_mrr_range_current->key[0], MYF(0));
       if (m_mrr_range_current->key[1])
-        my_free(m_mrr_range_current->key[1], MYF(0));
-      my_free(m_mrr_range_current, MYF(0));
+        vp_my_free(m_mrr_range_current->key[1], MYF(0));
+      vp_my_free(m_mrr_range_current, MYF(0));
     } while (m_mrr_range_first);
   }
   if (m_mrr_full_buffer)
   {
-    my_free(m_mrr_full_buffer, MYF(0));
+    vp_my_free(m_mrr_full_buffer, MYF(0));
     m_mrr_full_buffer = NULL;
     m_mrr_full_buffer_size = 0;
   }
@@ -815,7 +849,7 @@ int ha_vp::close()
       part_tables[roop_count].table->file->close();
 #endif
     }
-    my_free(part_tables[0].table, MYF(0));
+    vp_my_free(part_tables[0].table, MYF(0));
   }
 
 #ifndef WITHOUT_VP_BG_ACCESS
@@ -828,15 +862,10 @@ int ha_vp::close()
 #ifdef HANDLER_HAS_TOP_TABLE_FIELDS
   if (allocated_top_table_fields)
   {
-    my_free(top_table_field_for_childs[0], MYF(0));
+    vp_my_free(top_table_field_for_childs[0], MYF(0));
     allocated_top_table_fields = 0;
   }
 #endif
-  if (blob_buff)
-  {
-    delete [] blob_buff;
-    blob_buff = NULL;
-  }
 #ifdef WITH_PARTITION_STORAGE_ENGINE
   if (
     partition_handler_share &&
@@ -858,7 +887,7 @@ int ha_vp::close()
 #endif
   if (part_tables)
   {
-    my_free(part_tables, MYF(0));
+    vp_my_free(part_tables, MYF(0));
     part_tables = NULL;
 #ifdef VP_SUPPORT_MRR
     m_range_info = NULL;
@@ -866,7 +895,7 @@ int ha_vp::close()
   }
   if (ref_buf)
   {
-    my_free(ref_buf, MYF(0));
+    vp_my_free(ref_buf, MYF(0));
     ref_buf = NULL;
   }
   if (share)
@@ -887,15 +916,19 @@ int ha_vp::close()
   {
     ft_current = ft_first;
     ft_first = ft_current->next;
-    my_free(ft_current, MYF(0));
+    vp_my_free(ft_current, MYF(0));
   }
   ft_current = NULL;
   if (child_multi_range_first)
   {
-    my_free(child_multi_range_first, MYF(0));
+    vp_my_free(child_multi_range_first, MYF(0));
     child_multi_range_first = NULL;
   }
-
+  if (mr_init)
+  {
+    free_root(&mr, MYF(0));
+    mr_init = FALSE;
+  }
   DBUG_RETURN(0);
 }
 
@@ -1157,7 +1190,7 @@ int ha_vp::reset()
   while (condition)
   {
     tmp_cond = condition->next;
-    my_free(condition, MYF(0));
+    vp_my_free(condition, MYF(0));
     condition = tmp_cond;
   }
   memset(pruned_tables, 0, sizeof(uchar) * share->use_tables_size);
@@ -1220,6 +1253,9 @@ int ha_vp::reset()
 #ifdef VP_SUPPORT_MRR
   m_mrr_new_full_buffer_size = 0;
 #endif
+#ifdef HANDLER_HAS_GET_NEXT_GLOBAL_FOR_CHILD
+  handler_close = FALSE;
+#endif
   DBUG_RETURN(error_num);
 }
 
@@ -1267,12 +1303,7 @@ int ha_vp::extra(
         table_lock_count = 0;
         child_ref_length = 0;
         key_used_on_scan = MAX_KEY;
-        additional_table_flags |=
-          (HA_HAS_RECORDS |
-#ifdef HA_CAN_BULK_ACCESS
-            HA_CAN_BULK_ACCESS |
-#endif
-            VP_CAN_BG_SEARCH | VP_CAN_BG_INSERT | VP_CAN_BG_UPDATE);
+        additional_table_flags = vp_base_table_flags;
         if (share->same_all_columns)
           additional_table_flags_for_neg = 0;
         else
@@ -1320,13 +1351,8 @@ int ha_vp::extra(
               part_table->table->s->get_table_def_version();
           }
 #endif
-          additional_table_flags &= ~((ulonglong)
-            (part_table->table->file->ha_table_flags() ^
-              (HA_HAS_RECORDS |
-#ifdef HA_CAN_BULK_ACCESS
-                HA_CAN_BULK_ACCESS |
-#endif
-                VP_CAN_BG_SEARCH | VP_CAN_BG_INSERT | VP_CAN_BG_UPDATE)));
+          additional_table_flags &=
+            part_table->table->file->ha_table_flags();
           additional_table_flags_for_neg |=
             (part_table->table->file->ha_table_flags() &
               (HA_PARTIAL_COLUMN_READ | HA_PRIMARY_KEY_IN_READ_INDEX));
@@ -1339,7 +1365,7 @@ int ha_vp::extra(
         if (ref_length > ref_buf_length)
         {
           if (ref_buf)
-            my_free(ref_buf, MYF(0));
+            vp_my_free(ref_buf, MYF(0));
           if (!(ref_buf =
             (uchar*) my_malloc(ALIGN_SIZE(ref_length) * 2, MYF(MY_WME))))
             DBUG_RETURN(HA_ERR_OUT_OF_MEM);
@@ -1451,18 +1477,11 @@ int ha_vp::extra(
 #if MYSQL_VERSION_ID < 50500
       if (table->children_attached && !is_clone)
 #else
-      thd = ha_thd();
-      tmp_table_list = table->pos_in_table_list;
       if (children_attached && !is_clone)
 #endif
       {
         error_num = 0;
-        additional_table_flags &= ~((ulonglong)
-          (HA_HAS_RECORDS |
-#ifdef HA_CAN_BULK_ACCESS
-            HA_CAN_BULK_ACCESS |
-#endif
-            VP_CAN_BG_SEARCH | VP_CAN_BG_INSERT | VP_CAN_BG_UPDATE));
+        additional_table_flags = vp_base_table_flags;
         cached_table_flags = table_flags();
         for (roop_count = 0; roop_count < share->table_count; roop_count++)
         {
@@ -1486,13 +1505,22 @@ int ha_vp::extra(
         table->children_attached = FALSE;
 #else
         children_attached = FALSE;
-        tmp_table_list->next_global = *children_last_l;
-        if (*children_last_l)
-          (*children_last_l)->prev_global = &tmp_table_list->next_global;
-        if (thd->lex->query_tables_last == children_last_l)
-          thd->lex->query_tables_last = &tmp_table_list->next_global;
-        if (thd->lex->query_tables_own_last == children_last_l)
-          thd->lex->query_tables_own_last = &tmp_table_list->next_global;
+#ifdef HANDLER_HAS_GET_NEXT_GLOBAL_FOR_CHILD
+        if (!handler_close)
+        {
+#endif
+          thd = ha_thd();
+          tmp_table_list = table->pos_in_table_list;
+          tmp_table_list->next_global = *children_last_l;
+          if (*children_last_l)
+            (*children_last_l)->prev_global = &tmp_table_list->next_global;
+          if (thd->lex->query_tables_last == children_last_l)
+            thd->lex->query_tables_last = &tmp_table_list->next_global;
+          if (thd->lex->query_tables_own_last == children_last_l)
+            thd->lex->query_tables_own_last = &tmp_table_list->next_global;
+#ifdef HANDLER_HAS_GET_NEXT_GLOBAL_FOR_CHILD
+        }
+#endif
 #endif
         if (error_num)
           DBUG_RETURN(error_num);
@@ -1519,8 +1547,8 @@ int ha_vp::extra(
         part_tables[roop_count].table = NULL;
         part_tables[roop_count].lock_type = tmp_table_list->lock_type;
         part_tables[roop_count].mdl_request.init(
-          MDL_key::TABLE, part_tables[roop_count].db,
-          part_tables[roop_count].table_name,
+          MDL_key::TABLE, VP_TABLE_LIST_db_str(&part_tables[roop_count]),
+          VP_TABLE_LIST_table_name_str(&part_tables[roop_count]),
           (tmp_table_list->lock_type >= TL_WRITE_ALLOW_WRITE) ?
             MDL_SHARED_WRITE : MDL_SHARED_READ,
           MDL_TRANSACTION);
@@ -2730,7 +2758,7 @@ int ha_vp::multi_range_key_create_key(
       ) {
         if (m_mrr_range_current->key[0])
         {
-          my_free(m_mrr_range_current->key[0], MYF(0));
+          vp_my_free(m_mrr_range_current->key[0], MYF(0));
         }
         if (!(m_mrr_range_current->key[0] = (uchar *)
           my_multi_malloc(MYF(MY_WME),
@@ -2759,7 +2787,7 @@ int ha_vp::multi_range_key_create_key(
       ) {
         if (m_mrr_range_current->key[1])
         {
-          my_free(m_mrr_range_current->key[1], MYF(0));
+          vp_my_free(m_mrr_range_current->key[1], MYF(0));
         }
         if (!(m_mrr_range_current->key[1] = (uchar *)
           my_multi_malloc(MYF(MY_WME),
@@ -3095,7 +3123,7 @@ int ha_vp::multi_range_read_init(
   if (m_mrr_full_buffer_size < m_mrr_new_full_buffer_size)
   {
     if (m_mrr_full_buffer)
-      my_free(m_mrr_full_buffer, MYF(0));
+      vp_my_free(m_mrr_full_buffer, MYF(0));
     m_mrr_full_buffer_size = 0;
     if (!(m_mrr_full_buffer = (uchar *)
       my_multi_malloc(MYF(MY_WME),
@@ -3354,7 +3382,7 @@ int ha_vp::read_multi_range_first_init(
   if (vp_bit_is_set(share->need_converting, child_table_idx))
   {
     if (child_multi_range_first)
-      my_free(child_multi_range_first, MYF(0));
+      vp_my_free(child_multi_range_first, MYF(0));
     /* copy multi range for child */
     if (!(child_multi_range_first =
       (KEY_MULTI_RANGE *) my_multi_malloc(MYF(MY_WME),
@@ -3755,11 +3783,11 @@ int ha_vp::pre_rnd_next(
   if ((error_num = rnd_next_init()))
     DBUG_RETURN(error_num);
 
+#ifdef HA_CAN_BULK_ACCESS
   if (!rnd_scan || single_table)
     need_bulk_access_finish = FALSE;
   else
     need_bulk_access_finish = TRUE;
-#ifdef HA_CAN_BULK_ACCESS
   if (bulk_access_started)
     bulk_access_info_current->called = TRUE;
 #endif
@@ -4330,13 +4358,12 @@ error:
 
 void ha_vp::ft_end()
 {
-  int error_num, error_num2, roop_count;
+  int error_num, roop_count;
   DBUG_ENTER("ha_vp::ft_end");
   DBUG_PRINT("info",("vp this=%p", this));
   DBUG_PRINT("info",("vp table=%p", table));
   rnd_scan = FALSE;
   ft_inited = FALSE;
-  error_num = 0;
   for (roop_count = 0; roop_count < share->table_count; roop_count++)
   {
     if (vp_bit_is_set(ft_inited_tables, roop_count))
@@ -4349,9 +4376,9 @@ void ha_vp::ft_end()
     ) {
       DBUG_PRINT("info",("vp table_count=%d", roop_count));
       DBUG_PRINT("info",("vp child_table=%p", part_tables[roop_count].table));
-      if ((error_num2 =
+      if ((error_num =
         part_tables[roop_count].table->file->ha_index_or_rnd_end()))
-        error_num = error_num2;
+        store_error_num = error_num;
     }
   }
   handler::ft_end();
@@ -4420,11 +4447,11 @@ int ha_vp::pre_ft_read(
   if ((error_num = ft_read_init()))
     DBUG_RETURN(error_num);
 
+#ifdef HA_CAN_BULK_ACCESS
   if (single_table)
     need_bulk_access_finish = FALSE;
   else
     need_bulk_access_finish = TRUE;
-#ifdef HA_CAN_BULK_ACCESS
   if (bulk_access_started)
     bulk_access_info_current->called = TRUE;
 #endif
@@ -4759,7 +4786,7 @@ const char *ha_vp::table_type() const
 #if MYSQL_VERSION_ID < 50500
 static ulonglong vp_table_flags_msm = 0;
 #else
-#ifdef HTON_CAN_MULTISTEP_MERGE
+#ifdef HA_CAN_MULTISTEP_MERGE
 static ulonglong vp_table_flags_msm = HA_CAN_MULTISTEP_MERGE;
 #else
 static ulonglong vp_table_flags_msm = 0;
@@ -4786,9 +4813,6 @@ ulonglong ha_vp::table_flags() const
     HA_CAN_INSERT_DELAYED |
     HA_CAN_BIT_FIELD |
     HA_NO_COPY_ON_ALTER |
-    HA_BINLOG_ROW_CAPABLE |
-    HA_BINLOG_STMT_CAPABLE |
-    /* HA_HAS_RECORDS | */
     vp_table_flags_msm |
     additional_table_flags |
     (share ? share->additional_table_flags : 0)
@@ -5211,8 +5235,15 @@ int ha_vp::write_row(
   }
   DBUG_PRINT("info",("vp child_table[%d]->record[0]=%p",
     first_insert, child_table->record[0]));
-  if ((error_num =
-    child_table->file->ha_write_row(child_table->record[0])))
+#ifndef DBUG_OFF
+  my_bitmap_map *tmp_map =
+    dbug_tmp_use_all_columns(table, child_table->read_set);
+#endif
+  error_num = child_table->file->ha_write_row(child_table->record[0]);
+#ifndef DBUG_OFF
+  dbug_tmp_restore_column_map(child_table->read_set, tmp_map);
+#endif
+  if (error_num)
   {
     child_table->next_number_field = NULL;
     child_table->auto_increment_field_not_null = FALSE;
@@ -5341,9 +5372,17 @@ int ha_vp::write_row(
         }
         DBUG_PRINT("info",("vp child_table[%d]->record[0]=%p",
           roop_count, child_table->record[0]));
+#ifndef DBUG_OFF
+        my_bitmap_map *tmp_map =
+          dbug_tmp_use_all_columns(table, child_table->read_set);
+#endif
         VP_DBUG_PRINT_FIELD_VALUES(child_table, 0);
-        if ((error_num =
-          child_table->file->ha_write_row(child_table->record[0])))
+        error_num =
+          child_table->file->ha_write_row(child_table->record[0]);
+#ifndef DBUG_OFF
+        dbug_tmp_restore_column_map(child_table->read_set, tmp_map);
+#endif
+        if (error_num)
         {
           child_table->next_number_field = NULL;
           child_table->auto_increment_field_not_null = FALSE;
@@ -5624,7 +5663,7 @@ bool ha_vp::start_bulk_update()
 }
 
 int ha_vp::exec_bulk_update(
-  uint *dup_key_found
+  ha_rows *dup_key_found
 ) {
   int error_num, roop_count;
   DBUG_ENTER("ha_vp::exec_bulk_update");
@@ -5637,6 +5676,21 @@ int ha_vp::exec_bulk_update(
   DBUG_RETURN(0);
 }
 
+#ifdef VP_END_BULK_UPDATE_RETURNS_INT
+int ha_vp::end_bulk_update()
+{
+  int roop_count, error_num;
+  DBUG_ENTER("ha_vp::end_bulk_update");
+  for (roop_count = 0; roop_count < share->table_count; roop_count++)
+  {
+    if ((error_num = part_tables[roop_count].table->file->end_bulk_update()))
+    {
+      DBUG_RETURN(error_num);
+    }
+  }
+  DBUG_RETURN(0);
+}
+#else
 void ha_vp::end_bulk_update()
 {
   int roop_count;
@@ -5645,13 +5699,23 @@ void ha_vp::end_bulk_update()
     part_tables[roop_count].table->file->end_bulk_update();
   DBUG_VOID_RETURN;
 }
+#endif
 
 
+#ifdef VP_UPDATE_ROW_HAS_CONST_NEW_DATA
+int ha_vp::bulk_update_row(
+  const uchar *old_data,
+  const uchar *new_data,
+  ha_rows *dup_key_found
+)
+#else
 int ha_vp::bulk_update_row(
   const uchar *old_data,
   uchar *new_data,
-  uint *dup_key_found
-) {
+  ha_rows *dup_key_found
+)
+#endif
+{
   int error_num, error_num2 = 0, roop_count;
   THD *thd = table->in_use;
   my_ptrdiff_t ptr_diff = PTR_BYTE_DIFF(new_data, table->record[0]);
@@ -5662,22 +5726,16 @@ int ha_vp::bulk_update_row(
   TABLE *table2, *child_table;
   int bgu_mode;
   int bgi_mode;
-#ifdef _MSC_VER
   uchar *insert_table;
-#else
-  uchar insert_table[share->use_tables_size];
-#endif
   bool rnd_state = (rnd_scan || cb_state == CB_SEL_RND);
   DBUG_ENTER("ha_vp::bulk_update_row");
   DBUG_PRINT("info",("vp this=%p", this));
   DBUG_PRINT("info",("vp old_data=%p", old_data));
   DBUG_PRINT("info",("vp new_data=%p", new_data));
   dup_table_idx = share->table_count;
-#ifdef _MSC_VER
-  if (!(insert_table = (uchar *) my_malloc(sizeof(uchar) * share->use_tables_size,
-    MYF(MY_WME))))
+  if (!(insert_table =
+    (uchar *) my_alloca(sizeof(uchar) * share->use_tables_size)))
     DBUG_RETURN(HA_ERR_OUT_OF_MEM);
-#endif
   memset(insert_table, 0, sizeof(uchar) * share->use_tables_size);
 #ifndef WITHOUT_VP_BG_ACCESS
   bgu_mode = vp_param_bgu_mode(thd, share->bgu_mode);
@@ -5994,9 +6052,7 @@ int ha_vp::bulk_update_row(
       }
     }
   }
-#ifdef _MSC_VER
-  my_free(insert_table, MYF(MY_WME));
-#endif
+  my_afree(insert_table);
 #ifndef WITHOUT_VP_BG_ACCESS
   for (roop_count = 0; roop_count < share->table_count; roop_count++)
   {
@@ -6054,7 +6110,7 @@ int ha_vp::bulk_update_row(
   if (vp_key_copy.mem_root_init)
     free_root(&vp_key_copy.mem_root, MYF(0));
   if (vp_key_copy.ptr)
-    my_free(vp_key_copy.ptr, MYF(0));
+    vp_my_free(vp_key_copy.ptr, MYF(0));
   DBUG_RETURN(error_num2);
 
 error:
@@ -6072,30 +6128,51 @@ error:
   if (vp_key_copy.mem_root_init)
     free_root(&vp_key_copy.mem_root, MYF(0));
   if (vp_key_copy.ptr)
-    my_free(vp_key_copy.ptr, MYF(0));
+    vp_my_free(vp_key_copy.ptr, MYF(0));
 #ifdef _MSC_VER
-  my_free(insert_table, MYF(MY_WME));
+  vp_my_free(insert_table, MYF(MY_WME));
 #endif
   DBUG_RETURN(error_num);
 }
 
+#ifdef VP_UPDATE_ROW_HAS_CONST_NEW_DATA
+int ha_vp::update_row(
+  const uchar *old_data,
+  const uchar *new_data
+)
+#else
 int ha_vp::update_row(
   const uchar *old_data,
   uchar *new_data
-) {
+)
+#endif
+{
   DBUG_ENTER("ha_vp::update_row");
   DBUG_PRINT("info",("vp this=%p", this));
   DBUG_RETURN(bulk_update_row(old_data, new_data, NULL));
 }
 
 #ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS
+#ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
+#ifdef VP_MDEV_16246
+int ha_vp::direct_update_rows_init(
+  List<Item> *update_fields,
+  uint mode,
+  KEY_MULTI_RANGE *ranges,
+  uint range_count,
+  bool sorted,
+  uchar *new_data
+)
+#else
 int ha_vp::direct_update_rows_init(
   uint mode,
   KEY_MULTI_RANGE *ranges,
   uint range_count,
   bool sorted,
   uchar *new_data
-) {
+)
+#endif
+{
 #ifdef HANDLER_HAS_TOP_TABLE_FIELDS
   int error_num, roop_count, child_table_idx_bak = 0;
   KEY_MULTI_RANGE *child_ranges = NULL;
@@ -6223,17 +6300,118 @@ int ha_vp::direct_update_rows_init(
         child_ranges = &child_multi_range[roop_count];
       }
 #endif
+#ifdef VP_MDEV_16246
+      if ((error_num = part_tables[roop_count].table->file->
+        ha_direct_update_rows_init(update_fields, mode, child_ranges,
+        range_count, sorted,
+        part_tables[roop_count].table->record[0])))
+#else
       if ((error_num = part_tables[roop_count].table->file->
         ha_direct_update_rows_init(mode, child_ranges, range_count, sorted,
         part_tables[roop_count].table->record[0])))
+#endif
         DBUG_RETURN(error_num);
     }
   }
   DBUG_RETURN(0);
 #endif
 }
+#else
+#ifdef VP_MDEV_16246
+int ha_vp::direct_update_rows_init(
+  List<Item> *update_fields
+)
+#else
+int ha_vp::direct_update_rows_init()
+#endif
+{
+#ifdef HANDLER_HAS_TOP_TABLE_FIELDS
+  int error_num, roop_count, child_table_idx_bak = 0;
+#endif
+  DBUG_ENTER("ha_vp::direct_update_rows_init");
+#ifndef HANDLER_HAS_TOP_TABLE_FIELDS
+  DBUG_RETURN(HA_ERR_WRONG_COMMAND);
+#else
+#ifdef EXPLAIN_HAS_GET_UPD_DEL
+  Explain_update *explain_update = get_explain_upd_del();
+  if (explain_update)
+  {
+    DBUG_PRINT("info",("vp join_type=%d", explain_update->jtype));
+    if (
+      explain_update->jtype == JT_CONST ||
+      (explain_update->jtype == JT_RANGE && explain_update->rows == 1)
+    ) {
+      DBUG_PRINT("info",("vp const does not need direct_update"));
+      DBUG_RETURN(HA_ERR_WRONG_COMMAND);
+    }
+  }
+#else
+/*
+  JOIN *join = get_join();
+  if (join && vp_join_table_count(join) == 1 && join->join_tab)
+  {
+    DBUG_PRINT("info",("vp join_type=%d", join->join_tab->type));
+    if (
+      join->join_tab->type == JT_CONST ||
+      (join->join_tab->type == JT_RANGE && join->best_positions && join->best_positions[0].records_read == 1)
+    ) {
+      DBUG_PRINT("info",("vp const does not need direct_update"));
+      DBUG_RETURN(HA_ERR_WRONG_COMMAND);
+    }
+  }
+*/
+#endif
+  if (inited != NONE)
+    child_table_idx_bak = child_table_idx;
+  child_table_idx = share->table_count;
+  memset(use_tables2, 0, sizeof(uchar) * share->use_tables_size);
+  for (roop_count = 0; roop_count < share->table_count; roop_count++)
+  {
+    if (!(vp_bit_is_set(update_ignore, roop_count)))
+    {
+      clear_child_bitmap(roop_count);
+      if (set_child_bitmap(
+        (uchar *) table->write_set->bitmap,
+        roop_count, TRUE))
+        vp_set_bit(use_tables2, roop_count);
+      set_child_bitmap(
+        (uchar *) table->read_set->bitmap,
+        roop_count, FALSE);
+    }
+  }
+  if (inited != NONE)
+    child_table_idx = child_table_idx_bak;
+  else {
+    if (share->info_src_table)
+      child_table_idx = share->info_src_table - 1;
+    else
+      child_table_idx = 0;
+  }
+
+  for (roop_count = 0; roop_count < share->table_count; roop_count++)
+  {
+    DBUG_PRINT("info",("vp table_count=%d", roop_count));
+    if (
+      vp_bit_is_set(use_tables2, roop_count) &&
+      !(vp_bit_is_set(update_ignore, roop_count))
+    ) {
+#ifdef VP_MDEV_16246
+      if ((error_num = part_tables[roop_count].table->file->
+        direct_update_rows_init(update_fields)))
+#else
+      if ((error_num = part_tables[roop_count].table->file->
+        direct_update_rows_init()))
+#endif
+        DBUG_RETURN(error_num);
+    }
+  }
+  DBUG_RETURN(0);
+#endif
+}
+#endif
 
 #ifdef HA_CAN_BULK_ACCESS
+#ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
 int ha_vp::pre_direct_update_rows_init(
   uint mode,
   KEY_MULTI_RANGE *ranges,
@@ -6357,7 +6535,7 @@ int ha_vp::pre_direct_update_rows_init(
       }
 #endif
       if ((error_num = file->
-        ha_pre_direct_update_rows_init(mode, child_ranges, range_count, sorted,
+        pre_direct_update_rows_init(mode, child_ranges, range_count, sorted,
         part_tables[roop_count].table->record[0])))
       {
         if (error_num == HA_ERR_WRONG_COMMAND)
@@ -6372,14 +6550,109 @@ int ha_vp::pre_direct_update_rows_init(
   DBUG_RETURN(0);
 #endif
 }
+#else
+int ha_vp::pre_direct_update_rows_init()
+{
+#ifdef HANDLER_HAS_TOP_TABLE_FIELDS
+  int error_num, roop_count, child_table_idx_bak = 0;
+#endif
+  DBUG_ENTER("ha_vp::pre_direct_update_rows_init");
+#ifndef HANDLER_HAS_TOP_TABLE_FIELDS
+  need_bulk_access_finish = TRUE;
+  DBUG_RETURN(HA_ERR_WRONG_COMMAND);
+#else
+#ifdef EXPLAIN_HAS_GET_UPD_DEL
+  Explain_update *explain_update = get_explain_upd_del();
+  if (explain_update)
+  {
+    DBUG_PRINT("info",("vp join_type=%d", explain_update->jtype));
+    if (
+      explain_update->jtype == JT_CONST ||
+      (explain_update->jtype == JT_RANGE && explain_update->rows == 1)
+    ) {
+      DBUG_PRINT("info",("vp const does not need direct_update"));
+      need_bulk_access_finish = TRUE;
+      DBUG_RETURN(HA_ERR_WRONG_COMMAND);
+    }
+  }
+#else
+/*
+  JOIN *join = get_join();
+  if (join && vp_join_table_count(join) == 1 && join->join_tab)
+  {
+    DBUG_PRINT("info",("vp join_type=%d", join->join_tab->type));
+    if (
+      join->join_tab->type == JT_CONST ||
+      (join->join_tab->type == JT_RANGE && join->best_positions && join->best_positions[0].records_read == 1)
+    ) {
+      DBUG_PRINT("info",("vp const does not need direct_update"));
+      need_bulk_access_finish = TRUE;
+      DBUG_RETURN(HA_ERR_WRONG_COMMAND);
+    }
+  }
+*/
+#endif
+  if (pre_inited != NONE)
+    child_table_idx_bak = child_table_idx;
+  child_table_idx = share->table_count;
+  memset(use_tables2, 0, sizeof(uchar) * share->use_tables_size);
+  for (roop_count = 0; roop_count < share->table_count; roop_count++)
+  {
+    if (!(vp_bit_is_set(update_ignore, roop_count)))
+    {
+      clear_child_bitmap(roop_count);
+      if (set_child_bitmap(
+        (uchar *) table->write_set->bitmap,
+        roop_count, TRUE))
+        vp_set_bit(use_tables2, roop_count);
+      set_child_bitmap(
+        (uchar *) table->read_set->bitmap,
+        roop_count, FALSE);
+    }
+  }
+  if (pre_inited != NONE)
+    child_table_idx = child_table_idx_bak;
+  else {
+    if (share->info_src_table)
+      child_table_idx = share->info_src_table - 1;
+    else
+      child_table_idx = 0;
+  }
+
+  for (roop_count = 0; roop_count < share->table_count; roop_count++)
+  {
+    DBUG_PRINT("info",("vp table_count=%d", roop_count));
+    if (
+      vp_bit_is_set(use_tables2, roop_count) &&
+      !(vp_bit_is_set(update_ignore, roop_count))
+    ) {
+      handler *file;
+      file = part_tables[roop_count].table->file;
+      if ((error_num = file->
+        pre_direct_update_rows_init()))
+      {
+        if (error_num == HA_ERR_WRONG_COMMAND)
+          need_bulk_access_finish = TRUE;
+        DBUG_RETURN(error_num);
+      }
+    }
+  }
+  need_bulk_access_finish = FALSE;
+  if (bulk_access_started)
+    bulk_access_info_current->called = TRUE;
+  DBUG_RETURN(0);
+#endif
+}
+#endif
 #endif
 
+#ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
 int ha_vp::direct_update_rows(
   KEY_MULTI_RANGE *ranges,
   uint range_count,
   bool sorted,
   uchar *new_data,
-  uint *update_rows
+  ha_rows *update_rows
 ) {
   int error_num, error_num2 = 0, roop_count;
   KEY_MULTI_RANGE *child_ranges = NULL;
@@ -6459,8 +6732,43 @@ int ha_vp::direct_update_rows(
   }
   DBUG_RETURN(0);
 }
+#else
+int ha_vp::direct_update_rows(
+  ha_rows *update_rows
+) {
+  int error_num, error_num2 = 0, roop_count;
+  handler *file;
+  bool do_init;
+  DBUG_ENTER("ha_vp::direct_update_rows");
+  for (roop_count = 0; roop_count < share->table_count; roop_count++)
+  {
+    if (
+      vp_bit_is_set(use_tables2, roop_count) &&
+      !(vp_bit_is_set(update_ignore, roop_count))
+    ) {
+      file = part_tables[roop_count].table->file;
+      if (file->inited == NONE)
+        do_init = TRUE;
+      else
+        do_init = FALSE;
+      if (do_init && (error_num = file->ha_rnd_init(TRUE)))
+        DBUG_RETURN(error_num);
+      error_num = file->
+        ha_direct_update_rows(update_rows);
+      if (do_init)
+        error_num2 = file->ha_rnd_end();
+      if (!error_num)
+        error_num = error_num2;
+      if (error_num)
+        DBUG_RETURN(error_num);
+    }
+  }
+  DBUG_RETURN(0);
+}
+#endif
 
 #ifdef HA_CAN_BULK_ACCESS
+#ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
 int ha_vp::pre_direct_update_rows(
   KEY_MULTI_RANGE *ranges,
   uint range_count,
@@ -6545,6 +6853,41 @@ int ha_vp::pre_direct_update_rows(
   }
   DBUG_RETURN(0);
 }
+#else
+int ha_vp::pre_direct_update_rows()
+{
+  int error_num, error_num2 = 0, roop_count;
+  handler *file;
+  bool do_init;
+  DBUG_ENTER("ha_vp::pre_direct_update_rows");
+  for (roop_count = 0; roop_count < share->table_count; roop_count++)
+  {
+    if (
+      vp_bit_is_set(use_tables2, roop_count) &&
+      !(vp_bit_is_set(update_ignore, roop_count))
+    ) {
+      file = part_tables[roop_count].table->file;
+      if (file->pre_inited == NONE)
+        do_init = TRUE;
+      else
+        do_init = FALSE;
+      if (do_init && (error_num = file->ha_pre_rnd_init(TRUE)))
+        DBUG_RETURN(error_num);
+      error_num = file->ha_pre_direct_update_rows();
+      if (do_init)
+        error_num2 = file->ha_pre_rnd_end();
+      if (!error_num)
+      {
+        vp_set_bit(bulk_access_exec_bitmap, roop_count);
+        error_num = error_num2;
+      }
+      if (error_num)
+        DBUG_RETURN(error_num);
+    }
+  }
+  DBUG_RETURN(0);
+}
+#endif
 #endif
 #endif
 
@@ -6773,7 +7116,7 @@ int ha_vp::delete_row(
   if (vp_key_copy.mem_root_init)
     free_root(&vp_key_copy.mem_root, MYF(0));
   if (vp_key_copy.ptr)
-    my_free(vp_key_copy.ptr, MYF(0));
+    vp_my_free(vp_key_copy.ptr, MYF(0));
   DBUG_RETURN(0);
 
 error:
@@ -6791,11 +7134,12 @@ error:
   if (vp_key_copy.mem_root_init)
     free_root(&vp_key_copy.mem_root, MYF(0));
   if (vp_key_copy.ptr)
-    my_free(vp_key_copy.ptr, MYF(0));
+    vp_my_free(vp_key_copy.ptr, MYF(0));
   DBUG_RETURN(error_num);
 }
 
 #ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS
+#ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
 int ha_vp::direct_delete_rows_init(
   uint mode,
   KEY_MULTI_RANGE *ranges,
@@ -6924,8 +7268,83 @@ int ha_vp::direct_delete_rows_init(
   DBUG_RETURN(0);
 #endif
 }
+#else
+int ha_vp::direct_delete_rows_init()
+{
+#ifdef HANDLER_HAS_TOP_TABLE_FIELDS
+  int error_num, roop_count, child_table_idx_bak = 0;
+#endif
+  DBUG_ENTER("ha_vp::direct_delete_rows_init");
+#ifndef HANDLER_HAS_TOP_TABLE_FIELDS
+  DBUG_RETURN(HA_ERR_WRONG_COMMAND);
+#else
+#ifdef EXPLAIN_HAS_GET_UPD_DEL
+  Explain_update *explain_update = get_explain_upd_del();
+  if (explain_update)
+  {
+    DBUG_PRINT("info",("vp join_type=%d", explain_update->jtype));
+    if (
+      explain_update->jtype == JT_CONST ||
+      (explain_update->jtype == JT_RANGE && explain_update->rows == 1)
+    ) {
+      DBUG_PRINT("info",("vp const does not need direct_delete"));
+      DBUG_RETURN(HA_ERR_WRONG_COMMAND);
+    }
+  }
+#else
+/*
+  JOIN *join = get_join();
+  if (join && vp_join_table_count(join) == 1 && join->join_tab)
+  {
+    DBUG_PRINT("info",("vp join_type=%d", join->join_tab->type));
+    if (
+      join->join_tab->type == JT_CONST ||
+      (join->join_tab->type == JT_RANGE && join->best_positions && join->best_positions[0].records_read == 1)
+    ) {
+      DBUG_PRINT("info",("vp const does not need direct_delete"));
+      DBUG_RETURN(HA_ERR_WRONG_COMMAND);
+    }
+  }
+*/
+#endif
+  if (inited != NONE)
+    child_table_idx_bak = child_table_idx;
+  child_table_idx = share->table_count;
+  for (roop_count = 0; roop_count < share->table_count; roop_count++)
+  {
+    if (!(vp_bit_is_set(update_ignore, roop_count)))
+    {
+      clear_child_bitmap(roop_count);
+      set_child_bitmap(
+        (uchar *) table->read_set->bitmap,
+        roop_count, FALSE);
+    }
+  }
+  if (inited != NONE)
+    child_table_idx = child_table_idx_bak;
+  else {
+    if (share->info_src_table)
+      child_table_idx = share->info_src_table - 1;
+    else
+      child_table_idx = 0;
+  }
+
+  for (roop_count = 0; roop_count < share->table_count; roop_count++)
+  {
+    if (!(vp_bit_is_set(update_ignore, roop_count)))
+    {
+      if ((error_num = part_tables[roop_count].table->file->
+        direct_delete_rows_init()))
+        DBUG_RETURN(error_num);
+    }
+  }
+  DBUG_RETURN(0);
+#endif
+}
+#endif
 
 #ifdef HA_CAN_BULK_ACCESS
+#ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
 int ha_vp::pre_direct_delete_rows_init(
   uint mode,
   KEY_MULTI_RANGE *ranges,
@@ -7050,13 +7469,99 @@ int ha_vp::pre_direct_delete_rows_init(
   DBUG_RETURN(0);
 #endif
 }
+#else
+int ha_vp::pre_direct_delete_rows_init()
+{
+#ifdef HANDLER_HAS_TOP_TABLE_FIELDS
+  int error_num, roop_count, child_table_idx_bak = 0;
+#endif
+  DBUG_ENTER("ha_vp::pre_direct_delete_rows_init");
+#ifndef HANDLER_HAS_TOP_TABLE_FIELDS
+  need_bulk_access_finish = TRUE;
+  DBUG_RETURN(HA_ERR_WRONG_COMMAND);
+#else
+#ifdef EXPLAIN_HAS_GET_UPD_DEL
+  Explain_update *explain_update = get_explain_upd_del();
+  if (explain_update)
+  {
+    DBUG_PRINT("info",("vp join_type=%d", explain_update->jtype));
+    if (
+      explain_update->jtype == JT_CONST ||
+      (explain_update->jtype == JT_RANGE && explain_update->rows == 1)
+    ) {
+      DBUG_PRINT("info",("vp const does not need direct_delete"));
+      need_bulk_access_finish = TRUE;
+      DBUG_RETURN(HA_ERR_WRONG_COMMAND);
+    }
+  }
+#else
+/*
+  JOIN *join = get_join();
+  if (join && vp_join_table_count(join) == 1 && join->join_tab)
+  {
+    DBUG_PRINT("info",("vp join_type=%d", join->join_tab->type));
+    if (
+      join->join_tab->type == JT_CONST ||
+      (join->join_tab->type == JT_RANGE && join->best_positions && join->best_positions[0].records_read == 1)
+    ) {
+      DBUG_PRINT("info",("vp const does not need direct_delete"));
+      need_bulk_access_finish = TRUE;
+      DBUG_RETURN(HA_ERR_WRONG_COMMAND);
+    }
+  }
+*/
+#endif
+  if (pre_inited != NONE)
+    child_table_idx_bak = child_table_idx;
+  child_table_idx = share->table_count;
+  for (roop_count = 0; roop_count < share->table_count; roop_count++)
+  {
+    if (!(vp_bit_is_set(update_ignore, roop_count)))
+    {
+      clear_child_bitmap(roop_count);
+      set_child_bitmap(
+        (uchar *) table->read_set->bitmap,
+        roop_count, FALSE);
+    }
+  }
+  if (pre_inited != NONE)
+    child_table_idx = child_table_idx_bak;
+  else {
+    if (share->info_src_table)
+      child_table_idx = share->info_src_table - 1;
+    else
+      child_table_idx = 0;
+  }
+
+  for (roop_count = 0; roop_count < share->table_count; roop_count++)
+  {
+    if (!(vp_bit_is_set(update_ignore, roop_count)))
+    {
+      handler *file;
+      file = part_tables[roop_count].table->file;
+      if ((error_num = file->ha_pre_direct_delete_rows_init()))
+      {
+        if (error_num == HA_ERR_WRONG_COMMAND)
+          need_bulk_access_finish = TRUE;
+        DBUG_RETURN(error_num);
+      }
+    }
+  }
+  need_bulk_access_finish = FALSE;
+  if (bulk_access_started)
+    bulk_access_info_current->called = TRUE;
+  DBUG_RETURN(0);
+#endif
+}
+#endif
 #endif
 
+#ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
 int ha_vp::direct_delete_rows(
   KEY_MULTI_RANGE *ranges,
   uint range_count,
   bool sorted,
-  uint *delete_rows
+  ha_rows *delete_rows
 ) {
   int error_num, error_num2 = 0, roop_count;
   KEY_MULTI_RANGE *child_ranges = NULL;
@@ -7133,8 +7638,41 @@ int ha_vp::direct_delete_rows(
   }
   DBUG_RETURN(0);
 }
+#else
+int ha_vp::direct_delete_rows(
+  ha_rows *delete_rows
+) {
+  int error_num, error_num2 = 0, roop_count;
+  handler *file;
+  bool do_init;
+  DBUG_ENTER("ha_vp::direct_delete_rows");
+  for (roop_count = 0; roop_count < share->table_count; roop_count++)
+  {
+    if (!(vp_bit_is_set(update_ignore, roop_count)))
+    {
+      file = part_tables[roop_count].table->file;
+      if (file->inited == NONE)
+        do_init = TRUE;
+      else
+        do_init = FALSE;
+      if (do_init && (error_num = file->ha_rnd_init(TRUE)))
+        DBUG_RETURN(error_num);
+      error_num = file->
+        ha_direct_delete_rows(delete_rows);
+      if (do_init)
+        error_num2 = file->ha_rnd_end();
+      if (!error_num)
+        error_num = error_num2;
+      if (error_num)
+        DBUG_RETURN(error_num);
+    }
+  }
+  DBUG_RETURN(0);
+}
+#endif
 
 #ifdef HA_CAN_BULK_ACCESS
+#ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
 int ha_vp::pre_direct_delete_rows(
   KEY_MULTI_RANGE *ranges,
   uint range_count,
@@ -7216,6 +7754,40 @@ int ha_vp::pre_direct_delete_rows(
   }
   DBUG_RETURN(0);
 }
+#else
+int ha_vp::pre_direct_delete_rows()
+{
+  int error_num, error_num2 = 0, roop_count;
+  handler *file;
+  bool do_init;
+  DBUG_ENTER("ha_vp::pre_direct_delete_rows");
+  for (roop_count = 0; roop_count < share->table_count; roop_count++)
+  {
+    if (!(vp_bit_is_set(update_ignore, roop_count)))
+    {
+      file = part_tables[roop_count].table->file;
+      if (file->pre_inited == NONE)
+        do_init = TRUE;
+      else
+        do_init = FALSE;
+      if (do_init && (error_num = file->ha_pre_rnd_init(TRUE)))
+        DBUG_RETURN(error_num);
+      error_num = file->
+        ha_pre_direct_delete_rows();
+      if (do_init)
+        error_num2 = file->ha_pre_rnd_end();
+      if (!error_num)
+      {
+        vp_set_bit(bulk_access_exec_bitmap, roop_count);
+        error_num = error_num2;
+      }
+      if (error_num)
+        DBUG_RETURN(error_num);
+    }
+  }
+  DBUG_RETURN(0);
+}
+#endif
 #endif
 #endif
 
@@ -7536,7 +8108,7 @@ int ha_vp::set_top_table_and_fields(
     if (top_table_fields > allocated_top_table_fields)
     {
       if (allocated_top_table_fields)
-        my_free(top_table_field_for_childs[0], MYF(0));
+        vp_my_free(top_table_field_for_childs[0], MYF(0));
 
       if (!(top_table_field_for_childs[0] =
         (Field **) my_malloc(sizeof(Field *) * (top_table_fields + 1) *
@@ -7615,6 +8187,7 @@ TABLE_LIST *ha_vp::get_next_global_for_child()
   DBUG_ENTER("ha_vp::get_next_global_for_child");
   DBUG_PRINT("info",("vp this=%p", this));
   DBUG_PRINT("info",("vp part_tables=%p", part_tables));
+  handler_close = TRUE;
   for (roop_count = 0; roop_count < share->table_count; roop_count++)
   {
     part_tables[roop_count].parent_l = table->pos_in_table_list;
@@ -7679,7 +8252,7 @@ void ha_vp::cond_pop()
     for (roop_count = 0; roop_count < share->table_count; roop_count++)
       part_tables[roop_count].table->file->cond_pop();
     VP_CONDITION *tmp_cond = condition->next;
-    my_free(condition, MYF(0));
+    vp_my_free(condition, MYF(0));
     condition = tmp_cond;
   }
   DBUG_VOID_RETURN;
@@ -7876,8 +8449,8 @@ bool ha_vp::can_switch_engines()
   DBUG_RETURN(handler::can_switch_engines());
 }
 
-uint ha_vp::alter_table_flags(
-  uint flags
+VP_alter_table_operations ha_vp::alter_table_flags(
+  VP_alter_table_operations flags
 ) {
   DBUG_ENTER("ha_vp::alter_table_flags");
   DBUG_RETURN(handler::alter_table_flags(flags));
@@ -8058,13 +8631,24 @@ void ha_vp::free_foreign_key_create_info(
 }
 
 #ifdef VP_HANDLER_HAS_COUNT_QUERY_CACHE_DEPENDANT_TABLES
+#ifdef VP_REGISTER_QUERY_CACHE_TABLE_HAS_CONST_TABLE_KEY
+my_bool ha_vp::register_query_cache_table(
+  THD *thd,
+  const char *table_key,
+  uint key_length,
+  qc_engine_callback *engine_callback,
+  ulonglong *engine_data
+)
+#else
 my_bool ha_vp::register_query_cache_table(
   THD *thd,
   char *table_key,
   uint key_length,
   qc_engine_callback *engine_callback,
   ulonglong *engine_data
-) {
+)
+#endif
+{
   DBUG_ENTER("ha_vp::register_query_cache_table");
   DBUG_PRINT("info",("vp this=%p", this));
   DBUG_RETURN(handler::register_query_cache_table(
@@ -8711,29 +9295,28 @@ uchar *ha_vp::create_child_key(
   String str(buff, sizeof(buff), &my_charset_bin), str2;
   key_part_map tmp_key_part_map;
   DBUG_ENTER("ha_vp::create_child_key");
-#ifndef DBUG_OFF
-  int roop_count2;
-  key_info = &table->key_info[active_index];
-  key_part = key_info->key_part;
-  tmp_key_part_map =
-    make_prev_keypart_map(vp_user_defined_key_parts(key_info));
-  tmp_key_part_map &= keypart_map;
-  for (
-    roop_count = 0, ptr = (uchar *) key_same,
-    store_length = key_part->store_length;
-    tmp_key_part_map > 0;
-    ptr += store_length, roop_count++, tmp_key_part_map >>= 1, key_part++,
-    store_length = key_part->store_length
-  ) {
-    for (roop_count2 = 0; roop_count2 < (int) store_length; roop_count2++)
-    {
-      DBUG_PRINT("info",("vp key[%d][%d]=%x",
-        roop_count, roop_count2, ptr[roop_count2]));
-    }
-  }
-#endif
   if (vp_bit_is_set(share->need_converting, child_table_idx))
   {
+#ifndef DBUG_OFF
+    int roop_count2;
+    key_info = &table->key_info[active_index];
+    key_part = key_info->key_part;
+    tmp_key_part_map =
+      make_prev_keypart_map(vp_user_defined_key_parts(key_info));
+    tmp_key_part_map &= keypart_map;
+    for (
+      roop_count = 0, ptr = (uchar *) key_same;
+      tmp_key_part_map > 0;
+      ptr += store_length, roop_count++, tmp_key_part_map >>= 1, key_part++
+    ) {
+      store_length = key_part->store_length;
+      for (roop_count2 = 0; roop_count2 < (int) store_length; roop_count2++)
+      {
+        DBUG_PRINT("info",("vp key[%d][%d]=%x",
+          roop_count, roop_count2, ptr[roop_count2]));
+      }
+    }
+#endif
     table2 = part_tables[child_table_idx].table;
     key_info = &table->key_info[active_index];
     key_part = key_info->key_part;
@@ -8885,6 +9468,55 @@ int ha_vp::get_child_record_by_idx(
 #endif
               ((Field_blob *)field)->set_ptr(
                 ((Field_blob *)field2)->get_length(), tmp_char);
+              DBUG_PRINT("info", ("vp ((Field_blob *)field2)->get_length()=%u",
+                ((Field_blob *)field2)->get_length()));
+#ifndef DBUG_OFF
+              if (field2->type() == MYSQL_TYPE_GEOMETRY)
+              {
+                Field_geom *g1 = (Field_geom *) field;
+                Field_geom *g2 = (Field_geom *) field2;
+                DBUG_PRINT("info", ("vp geometry_type is g1:%u g2:%u",
+                  g1->geom_type, g2->geom_type));
+                DBUG_PRINT("info", ("vp srid is g1:%u g2:%u",
+                  g1->srid, g2->srid));
+                DBUG_PRINT("info", ("vp precision is g1:%u g2:%u",
+                  g1->precision, g2->precision));
+                DBUG_PRINT("info", ("vp storage_type is g1:%u g2:%u",
+                  g1->storage, g2->storage));
+
+                Geometry_buffer buffer;
+                Geometry *geom;
+                if ((geom = Geometry::construct(&buffer, (char *) tmp_char,
+                  g2->get_length())))
+                {
+                  str.length(0);
+                  str.set_charset(&my_charset_latin1);
+                  const char *dummy;
+                  if (!(geom->as_wkt(&str, &dummy)))
+                  {
+                    DBUG_PRINT("info", ("vp geom child is %s",
+                      str.c_ptr_safe()));
+                  }
+                }
+#ifdef VP_FIELD_BLOB_GET_PTR_RETURNS_UCHAR_PTR
+                tmp_char = g1->get_ptr();
+#else
+                g1->get_ptr(&tmp_char);
+#endif
+                if ((geom = Geometry::construct(&buffer, (char *) tmp_char,
+                  g1->get_length())))
+                {
+                  str.length(0);
+                  str.set_charset(&my_charset_latin1);
+                  const char *dummy;
+                  if (!(geom->as_wkt(&str, &dummy)))
+                  {
+                    DBUG_PRINT("info", ("vp geom parent is %s",
+                      str.c_ptr_safe()));
+                  }
+                }
+              }
+#endif
             } else {
               DBUG_PRINT("info", ("vp blob convert"));
               String *str2 = &blob_buff[field->field_index];
@@ -9019,7 +9651,7 @@ int ha_vp::get_child_record_by_pk(
   if (vp_key_copy.mem_root_init)
     free_root(&vp_key_copy.mem_root, MYF(0));
   if (vp_key_copy.ptr)
-    my_free(vp_key_copy.ptr, MYF(0));
+    vp_my_free(vp_key_copy.ptr, MYF(0));
   DBUG_RETURN(error_num);
 
 error:
@@ -9034,7 +9666,7 @@ error:
   if (vp_key_copy.mem_root_init)
     free_root(&vp_key_copy.mem_root, MYF(0));
   if (vp_key_copy.ptr)
-    my_free(vp_key_copy.ptr, MYF(0));
+    vp_my_free(vp_key_copy.ptr, MYF(0));
   DBUG_RETURN(error_num);
 }
 
@@ -9379,6 +10011,7 @@ void ha_vp::set_child_record_for_insert(
       field2 = field_ptr2[roop_count2];
       if (!bitmap_is_set(my_bitmap, roop_count2))
       {
+        vp_set_bit(my_bitmap->bitmap, roop_count2);
         if (column_idx < MAX_FIELDS)
         {
           DBUG_PRINT("info",("vp set field %d to %d-%d",
@@ -9472,7 +10105,7 @@ int ha_vp::search_by_pk(
     if (!vp_key_copy->mem_root_init)
     {
       vp_key_copy->mem_root_init = TRUE;
-      vp_init_alloc_root(&vp_key_copy->mem_root, 1024, 0, MYF(MY_WME));
+      VP_INIT_ALLOC_ROOT(&vp_key_copy->mem_root, 1024, 0, MYF(MY_WME));
       if (
         !(vp_key_copy->ptr = (char **) my_multi_malloc(MYF(MY_WME),
           &vp_key_copy->ptr,
@@ -9636,6 +10269,7 @@ int ha_vp::search_by_pk(
           memcpy(value, str.ptr(), length);
           value[length] = '\0';
           DBUG_PRINT("info", ("vp value = %s", value));
+          my_afree(value);
 #endif
         }
         field->move_field_offset(-ptr_diff);
@@ -9848,7 +10482,7 @@ void ha_vp::free_child_bitmap_buff(
   DBUG_ENTER("ha_vp::free_child_bitmap_buff");
   if (ins_child_bitmaps[0])
   {
-    my_free(ins_child_bitmaps[0], MYF(0));
+    vp_my_free(ins_child_bitmaps[0], MYF(0));
     ins_child_bitmaps[0] = NULL;
   }
   DBUG_VOID_RETURN;
@@ -10749,7 +11383,7 @@ int ha_vp::open_item_ref(
       (*(item_ref->ref))->type() != Item::CACHE_ITEM &&
       item_ref->ref_type() != Item_ref::VIEW_REF &&
       !item_ref->table_name &&
-      item_ref->name &&
+      VP_item_name_str(item_ref) &&
       item_ref->alias_name_used
     )
       DBUG_RETURN(0);
@@ -11663,7 +12297,7 @@ void ha_vp::delete_bulk_access_info(
 ) {
   DBUG_ENTER("ha_vp::delete_bulk_access_info");
   DBUG_PRINT("info",("vp this=%p", this));
-  my_free(bulk_access_info, MYF(0));
+  vp_my_free(bulk_access_info, MYF(0));
   DBUG_VOID_RETURN;
 }
 #endif

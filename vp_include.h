@@ -17,8 +17,9 @@
 #define VP_HEX_VERSION 0x0101
 
 #if MYSQL_VERSION_ID < 50500
+#define vp_my_free(A,B) my_free(A,B)
 #else
-#define my_free(A,B) my_free(A)
+#define vp_my_free(A,B) my_free(A)
 #ifdef pthread_mutex_t
 #undef pthread_mutex_t
 #endif
@@ -62,15 +63,52 @@
 #define my_sprintf(A,B) sprintf B
 #endif
 
-#if defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100204
-#define VP_FIELD_BLOB_GET_PTR_RETURNS_UCHAR_PTR
+#if defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100306
+#define VP_THD_db_str(A) (A)->db.str
+#define VP_THD_db_length(A) (A)->db.length
+#define VP_TABLE_LIST_db_str(A) (A)->db.str
+#define VP_TABLE_LIST_db_length(A) (A)->db.length
+#define VP_TABLE_LIST_table_name_str(A) (A)->table_name.str
+#define VP_TABLE_LIST_table_name_length(A) (A)->table_name.length
+#define VP_TABLE_LIST_alias_str(A) (A)->alias.str
+#define VP_TABLE_LIST_alias_length(A) (A)->alias.length
+#define VP_TABLE_LIST_ALIAS_HAS_LENGTH
+#define VP_field_name_str(A) (A)->field_name.str
+#define VP_field_name_length(A) (A)->field_name.length
+#define VP_item_name_str(A) (A)->name.str
+#define VP_item_name_length(A) (A)->name.length
+#else
+#define VP_THD_db_str(A) (A)->db
+#define VP_THD_db_length(A) (A)->db_length
+#define VP_TABLE_LIST_db_str(A) (A)->db
+#define VP_TABLE_LIST_db_length(A) (A)->db_length
+#define VP_TABLE_LIST_table_name_str(A) (A)->table_name
+#define VP_TABLE_LIST_table_name_length(A) (A)->table_name_length
+#define VP_TABLE_LIST_alias_str(A) (A)->alias
+#define VP_TABLE_LIST_alias_length(A) strlen((A)->alias)
+#define VP_field_name_str(A) (A)->field_name
+#define VP_field_name_length(A) strlen((A)->field_name)
+#define VP_item_name_str(A) (A)->name
+#define VP_item_name_length(A) strlen((A)->name)
 #endif
 
-#if defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100203
-#define HANDLER_HAS_TOP_TABLE_FIELDS
-#define PARTITION_HAS_EXTRA_ATTACH_CHILDREN
-#define PARTITION_HAS_GET_CHILD_HANDLERS
-#define HA_EXTRA_HAS_STARTING_ORDERED_INDEX_SCAN
+#if defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100213
+#define VP_INIT_ALLOC_ROOT(A, B, C, D) \
+  init_alloc_root(A, "spider", B, C, D)
+#elif defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100000
+#define VP_INIT_ALLOC_ROOT(A, B, C, D) \
+  init_alloc_root(A, B, C, D)
+#else
+#define VP_INIT_ALLOC_ROOT(A, B, C, D) \
+  init_alloc_root(A, B, C)
+#endif
+
+#if defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100209
+#define VP_create_partition_name(A,B,C,D,E,F) create_partition_name(A,B,C,D,E,F)
+#define VP_create_subpartition_name(A,B,C,D,E,F) create_subpartition_name(A,B,C,D,E,F)
+#else
+#define VP_create_partition_name(A,B,C,D,E,F) create_partition_name(A,C,D,E,F)
+#define VP_create_subpartition_name(A,B,C,D,E,F) create_subpartition_name(A,C,D,E,F)
 #endif
 
 #if defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100200
@@ -93,8 +131,6 @@ inline void VP_set_next_thread_id(THD *A)
 #define vp_join_table_count(A) (A)->table_count
 #define vp_get_default_part_db_type_from_partition(A) \
   plugin_data((A)->default_part_plugin, handlerton *)
-#define vp_init_alloc_root(A, B, C, D) \
-  init_alloc_root(A, B, C, D)
 #define LL(A) A ## LL
 #define VP_HANDLER_HAS_HA_CLOSE
 #define VP_HANDLER_HAS_COUNT_QUERY_CACHE_DEPENDANT_TABLES
@@ -105,8 +141,6 @@ inline void VP_set_next_thread_id(THD *A)
 #define vp_join_table_count(A) (A)->tables
 #define vp_get_default_part_db_type_from_partition(A) \
   (A)->default_part_db_type
-#define vp_init_alloc_root(A, B, C, D) \
-  init_alloc_root(A, B, C)
 #define VP_USE_OPEN_SKIP_TEMPORARY
 #define VP_KEY_HAS_EXTRA_LENGTH
 #define VP_HANDLER_HAS_HA_INDEX_READ_LAST_MAP
@@ -173,6 +207,7 @@ inline void VP_set_next_thread_id(THD *A)
         memcpy(value, str.ptr(), length); \
         value[length] = '\0'; \
         DBUG_PRINT("info", ("vp value = %s", value)); \
+        my_afree(value); \
       } \
       field->move_field_offset(-ptr_diff); \
     } \
