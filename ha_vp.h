@@ -1,4 +1,4 @@
-/* Copyright (C) 2009-2015 Kentoku Shiba
+/* Copyright (C) 2009-201 Kentoku Shiba
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -15,10 +15,6 @@
 
 #ifdef USE_PRAGMA_INTERFACE
 #pragma interface
-#endif
-
-#if (defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >= 100000)
-#define VP_HANDLER_START_BULK_INSERT_HAS_FLAGS
 #endif
 
 #define VP_TABLE_INFO_MAX_LEN 64
@@ -251,6 +247,12 @@ public:
   RANGE_SEQ_IF                 *m_seq_if;
   RANGE_SEQ_IF                 m_child_seq_if;
 #endif
+#ifdef HANDLER_HAS_GET_NEXT_GLOBAL_FOR_CHILD
+  bool handler_close;
+#endif
+
+  bool mr_init;
+  MEM_ROOT mr;
 
   ha_vp();
   ha_vp(
@@ -470,9 +472,13 @@ public:
     String *key
   );
   int ft_init();
+#ifdef HA_CAN_BULK_ACCESS
   int pre_ft_init();
+#endif
   void ft_end();
+#ifdef HA_CAN_BULK_ACCESS
   int pre_ft_end();
+#endif
   int ft_read(
     uchar *buf
   );
@@ -548,21 +554,44 @@ public:
 #endif
   bool start_bulk_update();
   int exec_bulk_update(
-    uint *dup_key_found
+    ha_rows *dup_key_found
   );
+#ifdef VP_END_BULK_UPDATE_RETURNS_INT
+  int end_bulk_update();
+#else
   void end_bulk_update();
+#endif
+#ifdef VP_UPDATE_ROW_HAS_CONST_NEW_DATA
+  int bulk_update_row(
+    const uchar *old_data,
+    const uchar *new_data,
+    ha_rows *dup_key_found
+  );
+  int update_row(
+    const uchar *old_data,
+    const uchar *new_data
+  );
+#else
   int bulk_update_row(
     const uchar *old_data,
     uchar *new_data,
-    uint *dup_key_found
+    ha_rows *dup_key_found
   );
   int update_row(
     const uchar *old_data,
     uchar *new_data
   );
+#endif
 #ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS
 #ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
+#ifdef VP_MDEV_16246
+  inline int direct_update_rows_init(
+    List<Item> *update_fields
+  ) {
+    return direct_update_rows_init(update_fields, 2, NULL, 0, FALSE, NULL);
+  }
   int direct_update_rows_init(
+    List<Item> *update_fields,
     uint mode,
     KEY_MULTI_RANGE *ranges,
     uint range_count,
@@ -570,7 +599,26 @@ public:
     uchar *new_data
   );
 #else
+  inline int direct_update_rows_init()
+  {
+    return direct_update_rows_init(2, NULL, 0, FALSE, NULL);
+  }
+  int direct_update_rows_init(
+    uint mode,
+    KEY_MULTI_RANGE *ranges,
+    uint range_count,
+    bool sorted,
+    uchar *new_data
+  );
+#endif
+#else
+#ifdef VP_MDEV_16246
+  int direct_update_rows_init(
+    List<Item> *update_fields
+  );
+#else
   int direct_update_rows_init();
+#endif
 #endif
 #ifdef HA_CAN_BULK_ACCESS
 #ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
@@ -586,16 +634,20 @@ public:
 #endif
 #endif
 #ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
+  inline int direct_update_rows(ha_rows *update_rows)
+  {
+    return direct_update_rows(NULL, 0, FALSE, NULL, update_rows);
+  }
   int direct_update_rows(
     KEY_MULTI_RANGE *ranges,
     uint range_count,
     bool sorted,
     uchar *new_data,
-    uint *update_rows
+    ha_rows *update_rows
   );
 #else
   int direct_update_rows(
-    uint *update_rows
+    ha_rows *update_rows
   );
 #endif
 #ifdef HA_CAN_BULK_ACCESS
@@ -619,6 +671,10 @@ public:
   );
 #ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS
 #ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
+  inline int direct_delete_rows_init()
+  {
+    return direct_delete_rows_init(2, NULL, 0, FALSE);
+  }
   int direct_delete_rows_init(
     uint mode,
     KEY_MULTI_RANGE *ranges,
@@ -630,6 +686,10 @@ public:
 #endif
 #ifdef HA_CAN_BULK_ACCESS
 #ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
+  inline int pre_direct_delete_rows_init()
+  {
+    return pre_direct_delete_rows_init(2, NULL, 0, FALSE);
+  }
   int pre_direct_delete_rows_init(
     uint mode,
     KEY_MULTI_RANGE *ranges,
@@ -641,19 +701,29 @@ public:
 #endif
 #endif
 #ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
+  inline int direct_delete_rows(ha_rows *delete_rows)
+  {
+    return direct_delete_rows(NULL, 0, FALSE, delete_rows);
+  }
   int direct_delete_rows(
     KEY_MULTI_RANGE *ranges,
     uint range_count,
     bool sorted,
-    uint *delete_rows
+    ha_rows *delete_rows
   );
 #else
   int direct_delete_rows(
-    uint *delete_rows
+    ha_rows *delete_rows
   );
 #endif
 #ifdef HA_CAN_BULK_ACCESS
 #ifdef HANDLER_HAS_DIRECT_UPDATE_ROWS_WITH_HS
+  inline int pre_direct_delete_rows()
+  {
+    ha_rows delete_rows;
+
+    return pre_direct_delete_rows(NULL, 0, FALSE, &delete_rows);
+  }
   int pre_direct_delete_rows(
     KEY_MULTI_RANGE *ranges,
     uint range_count,
@@ -775,8 +845,8 @@ public:
   );
   bool primary_key_is_clustered();
   bool can_switch_engines();
-  uint alter_table_flags(
-    uint flags
+  VP_alter_table_operations alter_table_flags(
+    VP_alter_table_operations flags
   );
 #ifdef VP_HANDLER_HAS_ADD_INDEX
 #if MYSQL_VERSION_ID < 50500 || MYSQL_VERSION_ID >= 50600
@@ -850,6 +920,15 @@ public:
     char* str
   );
 #ifdef VP_HANDLER_HAS_COUNT_QUERY_CACHE_DEPENDANT_TABLES
+#ifdef VP_REGISTER_QUERY_CACHE_TABLE_HAS_CONST_TABLE_KEY
+  my_bool register_query_cache_table(
+    THD *thd,
+    const char *table_key,
+    uint key_length,
+    qc_engine_callback *engine_callback,
+    ulonglong *engine_data
+  );
+#else
   my_bool register_query_cache_table(
     THD *thd,
     char *table_key,
@@ -857,6 +936,7 @@ public:
     qc_engine_callback *engine_callback,
     ulonglong *engine_data
   );
+#endif
   uint count_query_cache_dependant_tables(
     uint8 *tables_type
   );

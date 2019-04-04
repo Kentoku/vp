@@ -1,4 +1,5 @@
-/* Copyright (C) 2009-2015 Kentoku Shiba
+/* Copyright (C) 2009-2019 Kentoku Shiba
+   Copyright (C) 2019 MariaDB corp
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -16,6 +17,7 @@
 #define MYSQL_SERVER 1
 #include <my_global.h>
 #include "mysql_version.h"
+#include "vp_environ.h"
 #if MYSQL_VERSION_ID < 50500
 #include "mysql_priv.h"
 #include <mysql/plugin.h>

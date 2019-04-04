@@ -1,4 +1,5 @@
-/* Copyright (C) 2009-2015 Kentoku Shiba
+/* Copyright (C) 2009-2019 Kentoku Shiba
+   Copyright (C) 2019 MariaDB corp
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -16,6 +17,7 @@
 #define MYSQL_SERVER 1
 #include <my_global.h>
 #include "mysql_version.h"
+#include "vp_environ.h"
 #if MYSQL_VERSION_ID < 50500
 #include "mysql_priv.h"
 #include <mysql/plugin.h>
@@ -35,7 +37,7 @@
 #include "ha_vp.h"
 #include "vp_table.h"
 
-#ifndef SPIDER_HAS_NEXT_THREAD_ID
+#ifndef VP_HAS_NEXT_THREAD_ID
 ulong *vp_db_att_thread_id;
 #endif
 
@@ -184,9 +186,225 @@ int vp_free_share_alloc(
   DBUG_RETURN(0);
 }
 
+/**
+  Initialize the parameter string parse information.
+
+  @param  param_string      Pointer to the parameter string being parsed.
+  @param  error_code        Error code of the error message to print when
+                            an error is detected.
+*/
+
+inline void st_vp_param_string_parse::init(
+  char *param_string,
+  int error_code
+)
+{
+  DBUG_ENTER("st_vp_param_string_parse::init");
+  start_ptr = param_string;
+  end_ptr = start_ptr + strlen(start_ptr);
+
+  init_param_title();
+  init_param_value();
+
+  error_num = error_code;
+  DBUG_VOID_RETURN;
+}
+
+/**
+  Initialize the current parameter title.
+*/
+
+inline void st_vp_param_string_parse::init_param_title()
+{
+  DBUG_ENTER("st_vp_param_string_parse::init_param_title");
+  start_title_ptr = end_title_ptr = NULL;
+  delim_title_len = 0;
+  delim_title = '\0';
+  DBUG_VOID_RETURN;
+}
+
+/**
+  Save pointers to the start and end positions of the current parameter
+  title in the parameter string.  Also save the parameter title's
+  delimiter character.
+
+  @param  start_value       Pointer to the start position of the current
+                            parameter title.
+  @param  end_value         Pointer to the end   position of the current
+                            parameter title.
+*/
+
+inline void st_vp_param_string_parse::set_param_title(
+  char *start_title,
+  char *end_title
+)
+{
+  DBUG_ENTER("st_vp_param_string_parse::set_param_title");
+  start_title_ptr = start_title;
+  end_title_ptr = end_title;
+
+  if (*start_title == '"' ||
+      *start_title == '\'')
+  {
+    delim_title = *start_title;
+
+    if (start_title >= start_ptr && *--start_title == '\\')
+      delim_title_len = 2;
+    else
+      delim_title_len = 1;
+  }
+  DBUG_VOID_RETURN;
+}
+
+/**
+  Initialize the current parameter value.
+*/
+
+inline void st_vp_param_string_parse::init_param_value()
+{
+  DBUG_ENTER("st_vp_param_string_parse::init_param_value");
+  start_value_ptr = end_value_ptr = NULL;
+  delim_value_len = 0;
+  delim_value = '\0';
+  DBUG_VOID_RETURN;
+}
+
+/**
+  Save pointers to the start and end positions of the current parameter
+  value in the parameter string.  Also save the parameter value's
+  delimiter character.
+
+  @param  start_value       Pointer to the start position of the current
+                            parameter value.
+  @param  end_value         Pointer to the end   position of the current
+                            parameter value.
+*/
+
+inline void st_vp_param_string_parse::set_param_value(
+  char *start_value,
+  char *end_value
+)
+{
+  DBUG_ENTER("st_vp_param_string_parse::set_param_value");
+  start_value_ptr = start_value--;
+  end_value_ptr = end_value;
+
+  if (*start_value == '"' ||
+      *start_value == '\'')
+  {
+    delim_value = *start_value;
+
+    if (*--start_value == '\\')
+      delim_value_len = 2;
+    else
+      delim_value_len = 1;
+  }
+  DBUG_VOID_RETURN;
+}
+
+/**
+  Determine whether the current parameter in the parameter string has
+  extra parameter values.
+
+  @return   0               Current parameter value in the parameter string
+                            does not have extra parameter values.
+            <> 0            Error code indicating that the current parameter
+                            value in the parameter string has extra
+                            parameter values.
+*/
+
+inline int st_vp_param_string_parse::has_extra_parameter_values()
+{
+  int error_num = 0;
+  DBUG_ENTER("st_vp_param_string_parse::has_extra_parameter_values");
+
+  if (end_value_ptr)
+  {
+    /* There is a current parameter value */
+    char *end_param_ptr =  end_value_ptr;
+
+    while (end_param_ptr < end_ptr &&
+      (*end_param_ptr == ' ' || *end_param_ptr == '\r' ||
+       *end_param_ptr == '\n' || *end_param_ptr == '\t'))
+      end_param_ptr++;
+
+    if (end_param_ptr < end_ptr && *end_param_ptr != '\0')
+    {
+      /* Extra values in parameter definition */
+      error_num = print_param_error();
+    }
+  }
+
+  DBUG_RETURN(error_num);
+}
+
+/**
+  Restore the current parameter's input delimiter characters in the
+  parameter string.  They were NULLed during parameter parsing.
+*/
+
+inline void st_vp_param_string_parse::restore_delims()
+{
+  char *end = end_title_ptr - 1;
+  DBUG_ENTER("st_vp_param_string_parse::restore_delims");
+
+  switch (delim_title_len)
+  {
+  case 2:
+    *end++ = '\\';
+    /* Fall through */
+  case 1:
+    *end = delim_title;
+  }
+
+  end = end_value_ptr - 1;
+  switch (delim_value_len)
+  {
+  case 2:
+    *end++ = '\\';
+    /* Fall through */
+  case 1:
+    *end = delim_value;
+  }
+  DBUG_VOID_RETURN;
+}
+
+/**
+  Print a parameter string error message.
+
+  @return                   Error code.
+*/
+
+int st_vp_param_string_parse::print_param_error()
+{
+  DBUG_ENTER("st_vp_param_string_parse::print_param_error");
+  if (start_title_ptr)
+  {
+    /* Restore the input delimiter characters */
+    restore_delims();
+
+    /* Print the error message */
+    switch (error_num)
+    {
+    case ER_VP_INVALID_UDF_PARAM_NUM:
+      my_printf_error(error_num, ER_VP_INVALID_UDF_PARAM_STR,
+                      MYF(0), start_title_ptr);
+      break;
+    case ER_VP_INVALID_TABLE_INFO_NUM:
+    default:
+      my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
+                      MYF(0), start_title_ptr);
+    }
+
+    DBUG_RETURN(error_num);
+  }
+  DBUG_RETURN(0);
+}
+
 char *vp_get_string_between_quote(
   char *ptr,
-  bool alloc
+  bool alloc,
+  VP_PARAM_STRING_PARSE *param_string_parse
 ) {
   char *start_ptr, *end_ptr, *tmp_ptr, *esc_ptr;
   bool find_flg = FALSE, esc_flg = FALSE;
@@ -277,6 +495,10 @@ char *vp_get_string_between_quote(
       strcpy(esc_ptr, esc_ptr + 1);
     }
   }
+
+  if (param_string_parse)
+    param_string_parse->set_param_value(start_ptr, start_ptr + strlen(start_ptr) + 1);
+
   if (alloc)
   {
     DBUG_RETURN(
@@ -289,73 +511,6 @@ char *vp_get_string_between_quote(
   }
 }
 
-#define VP_PARAM_STR_LEN(name) name ## _length
-#define VP_PARAM_STR(title_name, param_name) \
-  if (!strncasecmp(tmp_ptr, title_name, title_length)) \
-  { \
-    DBUG_PRINT("info",("vp "title_name" start")); \
-    if (!share->param_name) \
-    { \
-      if ((share->param_name = vp_get_string_between_quote( \
-        start_ptr, TRUE))) \
-        share->VP_PARAM_STR_LEN(param_name) = strlen(share->param_name); \
-      else { \
-        error_num = ER_VP_INVALID_TABLE_INFO_NUM; \
-        my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR, \
-          MYF(0), tmp_ptr); \
-        goto error; \
-      } \
-      DBUG_PRINT("info",("vp "title_name"=%s", share->param_name)); \
-    } \
-    break; \
-  }
-#define VP_PARAM_INT_WITH_MAX(title_name, param_name, min_val, max_val) \
-  if (!strncasecmp(tmp_ptr, title_name, title_length)) \
-  { \
-    DBUG_PRINT("info",("vp "title_name" start")); \
-    if (share->param_name == -1) \
-    { \
-      if ((tmp_ptr2 = vp_get_string_between_quote( \
-        start_ptr, FALSE))) \
-      { \
-        share->param_name = atoi(tmp_ptr2); \
-        if (share->param_name < min_val) \
-          share->param_name = min_val; \
-        else if (share->param_name > max_val) \
-          share->param_name = max_val; \
-      } else { \
-        error_num = ER_VP_INVALID_TABLE_INFO_NUM; \
-        my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR, \
-          MYF(0), tmp_ptr); \
-        goto error; \
-      } \
-      DBUG_PRINT("info",("vp "title_name"=%d", share->param_name)); \
-    } \
-    break; \
-  }
-#define VP_PARAM_INT(title_name, param_name, min_val) \
-  if (!strncasecmp(tmp_ptr, title_name, title_length)) \
-  { \
-    DBUG_PRINT("info",("vp "title_name" start")); \
-    if (share->param_name == -1) \
-    { \
-      if ((tmp_ptr2 = vp_get_string_between_quote( \
-        start_ptr, FALSE))) \
-      { \
-        share->param_name = atoi(tmp_ptr2); \
-        if (share->param_name < min_val) \
-          share->param_name = min_val; \
-      } else { \
-        error_num = ER_VP_INVALID_TABLE_INFO_NUM; \
-        my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR, \
-          MYF(0), tmp_ptr); \
-        goto error; \
-      } \
-      DBUG_PRINT("info",("vp "title_name"=%d", share->param_name)); \
-    } \
-    break; \
-  }
-
 int vp_parse_table_info(
   VP_SHARE *share,
   TABLE *table,
@@ -367,6 +522,7 @@ int vp_parse_table_info(
   char *tmp_ptr, *tmp_ptr2, *start_ptr;
   int roop_count;
   int title_length;
+  VP_PARAM_STRING_PARSE param_string_parse;
 #ifdef WITH_PARTITION_STORAGE_ENGINE
   partition_element *part_elem;
   partition_element *sub_elem;
@@ -384,7 +540,8 @@ int vp_parse_table_info(
   DBUG_PRINT("info",
     ("vp s->normalized_path=%s", table->s->normalized_path.str));
 #ifdef WITH_PARTITION_STORAGE_ENGINE
-  vp_get_partition_info(share->table_name, table, &part_elem, &sub_elem);
+  vp_get_partition_info(share->table_name, share->table_name_length, table->s,
+    table->part_info, &part_elem, &sub_elem);
 #endif
   share->choose_table_mode = -1;
   share->choose_table_mode_for_lock = -1;
@@ -405,7 +562,11 @@ int vp_parse_table_info(
   share->allow_different_column_type = -1;
 
 #ifdef WITH_PARTITION_STORAGE_ENGINE
+#ifdef VP_PARTITION_HAS_CONNECTION_STRING
+  for (roop_count = 6; roop_count > 0; roop_count--)
+#else
   for (roop_count = 4; roop_count > 0; roop_count--)
+#endif
 #else
   for (roop_count = 2; roop_count > 0; roop_count--)
 #endif
@@ -418,7 +579,25 @@ int vp_parse_table_info(
     switch (roop_count)
     {
 #ifdef WITH_PARTITION_STORAGE_ENGINE
+#ifdef VP_PARTITION_HAS_CONNECTION_STRING
+      case 6:
+        if (!sub_elem || sub_elem->connect_string.length == 0)
+          continue;
+        DBUG_PRINT("info",("vp create sub connect string"));
+        if (
+          !(comment_string = vp_create_string(
+            sub_elem->connect_string.str,
+            sub_elem->connect_string.length))
+        ) {
+          error_num = HA_ERR_OUT_OF_MEM;
+          goto error_alloc_comment_string;
+        }
+        DBUG_PRINT("info",("vp connect_string=%s", comment_string));
+        break;
+      case 5:
+#else
       case 4:
+#endif
         if (!sub_elem || !sub_elem->part_comment)
           continue;
         DBUG_PRINT("info",("vp create sub comment string"));
@@ -432,6 +611,22 @@ int vp_parse_table_info(
         }
         DBUG_PRINT("info",("vp sub comment string=%s", comment_string));
         break;
+#ifdef VP_PARTITION_HAS_CONNECTION_STRING
+      case 4:
+        if (!part_elem || part_elem->connect_string.length == 0)
+          continue;
+        DBUG_PRINT("info",("vp create part connect string"));
+        if (
+          !(comment_string = vp_create_string(
+            part_elem->connect_string.str,
+            part_elem->connect_string.length))
+        ) {
+          error_num = HA_ERR_OUT_OF_MEM;
+          goto error_alloc_comment_string;
+        }
+        DBUG_PRINT("info",("vp connect_string=%s", comment_string));
+        break;
+#endif
       case 3:
         if (!part_elem || !part_elem->part_comment)
           continue;
@@ -478,6 +673,8 @@ int vp_parse_table_info(
     }
 
     sprit_ptr[0] = comment_string;
+    param_string_parse.init(comment_string,
+      ER_VP_INVALID_TABLE_INFO_NUM);
     while (sprit_ptr[0])
     {
       if ((sprit_ptr[1] = strchr(sprit_ptr[0], ',')))
@@ -504,140 +701,124 @@ int vp_parse_table_info(
         title_length++;
         start_ptr++;
       }
+      param_string_parse.set_param_title(tmp_ptr, tmp_ptr + title_length);
 
       switch (title_length)
       {
         case 0:
+          error_num = param_string_parse.print_param_error();
+          if (error_num)
+            goto error;
           continue;
         case 3:
-          VP_PARAM_INT_WITH_MAX("aba", allow_bulk_autoinc, 0, 1);
-          VP_PARAM_INT_WITH_MAX("adc", allow_different_column_type, 0, 1);
-          VP_PARAM_INT("ait", auto_increment_table, 1);
+          VP_PARAM_INT_WITH_MAX(share, "aba", allow_bulk_autoinc, 0, 1);
+          VP_PARAM_INT_WITH_MAX(share, "adc", allow_different_column_type,
+            0, 1);
+          VP_PARAM_INT(share, "ait", auto_increment_table, 1);
 #ifndef WITHOUT_VP_BG_ACCESS
-          VP_PARAM_INT_WITH_MAX("bgs", bgs_mode, 0, 1);
-          VP_PARAM_INT_WITH_MAX("bgi", bgi_mode, 0, 1);
-          VP_PARAM_INT_WITH_MAX("bgu", bgu_mode, 0, 1);
+          VP_PARAM_INT_WITH_MAX(share, "bgs", bgs_mode, 0, 1);
+          VP_PARAM_INT_WITH_MAX(share, "bgi", bgi_mode, 0, 1);
+          VP_PARAM_INT_WITH_MAX(share, "bgu", bgu_mode, 0, 1);
 #endif
-          VP_PARAM_INT_WITH_MAX("cbl", child_binlog, 0, 1);
-          VP_PARAM_STR("cil", choose_ignore_table_list_for_lock);
-          VP_PARAM_STR("cit", choose_ignore_table_list);
-          VP_PARAM_INT_WITH_MAX("cml", choose_table_mode_for_lock, 0, 1);
-          VP_PARAM_INT_WITH_MAX("ctm", choose_table_mode, 0, 1);
-          VP_PARAM_STR("ddb", tgt_default_db_name);
-          VP_PARAM_INT_WITH_MAX("tcm", table_count_mode, 0, 1);
-          VP_PARAM_INT("ist", info_src_table, 0);
-          VP_PARAM_INT_WITH_MAX("mrm", multi_range_mode, 0, 1);
-          VP_PARAM_INT_WITH_MAX("pcm", pk_correspond_mode, 0, 1);
-          VP_PARAM_INT_WITH_MAX("stc", support_table_cache, 0, 2);
-          VP_PARAM_STR("tnl", tgt_table_name_list);
-          VP_PARAM_STR("tnp", tgt_table_name_prefix);
-          VP_PARAM_STR("tns", tgt_table_name_suffix);
-          VP_PARAM_INT_WITH_MAX("zru", zero_record_update_mode, 0, 1);
-          error_num = ER_VP_INVALID_TABLE_INFO_NUM;
-          my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
-            MYF(0), tmp_ptr);
+          VP_PARAM_INT_WITH_MAX(share, "cbl", child_binlog, 0, 1);
+          VP_PARAM_STR(share, "cil", choose_ignore_table_list_for_lock);
+          VP_PARAM_STR(share, "cit", choose_ignore_table_list);
+          VP_PARAM_INT_WITH_MAX(share, "cml", choose_table_mode_for_lock,
+            0, 1);
+          VP_PARAM_INT_WITH_MAX(share, "ctm", choose_table_mode, 0, 1);
+          VP_PARAM_STR(share, "ddb", tgt_default_db_name);
+          VP_PARAM_INT_WITH_MAX(share, "tcm", table_count_mode, 0, 1);
+          VP_PARAM_INT(share, "ist", info_src_table, 0);
+          VP_PARAM_INT_WITH_MAX(share, "mrm", multi_range_mode, 0, 1);
+          VP_PARAM_INT_WITH_MAX(share, "pcm", pk_correspond_mode, 0, 1);
+          VP_PARAM_INT_WITH_MAX(share, "stc", support_table_cache, 0, 2);
+          VP_PARAM_STR(share, "tnl", tgt_table_name_list);
+          VP_PARAM_STR(share, "tnp", tgt_table_name_prefix);
+          VP_PARAM_STR(share, "tns", tgt_table_name_suffix);
+          VP_PARAM_INT_WITH_MAX(share, "zru", zero_record_update_mode, 0, 1);
+          error_num = param_string_parse.print_param_error();
           goto error;
 #ifndef WITHOUT_VP_BG_ACCESS
         case 8:
-          VP_PARAM_INT_WITH_MAX("bgs_mode", bgs_mode, 0, 1);
-          VP_PARAM_INT_WITH_MAX("bgi_mode", bgi_mode, 0, 1);
-          VP_PARAM_INT_WITH_MAX("bgu_mode", bgu_mode, 0, 1);
-          error_num = ER_VP_INVALID_TABLE_INFO_NUM;
-          my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
-            MYF(0), tmp_ptr);
+          VP_PARAM_INT_WITH_MAX(share, "bgs_mode", bgs_mode, 0, 1);
+          VP_PARAM_INT_WITH_MAX(share, "bgi_mode", bgi_mode, 0, 1);
+          VP_PARAM_INT_WITH_MAX(share, "bgu_mode", bgu_mode, 0, 1);
+          error_num = param_string_parse.print_param_error();
           goto error;
 #endif
         case 12:
-          VP_PARAM_INT_WITH_MAX("child_binlog", child_binlog, 0, 1);
-          error_num = ER_VP_INVALID_TABLE_INFO_NUM;
-          my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
-            MYF(0), tmp_ptr);
+          VP_PARAM_INT_WITH_MAX(share, "child_binlog", child_binlog, 0, 1);
+          error_num = param_string_parse.print_param_error();
           goto error;
         case 15:
-          VP_PARAM_STR("table_name_list", tgt_table_name_list);
-          error_num = ER_VP_INVALID_TABLE_INFO_NUM;
-          my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
-            MYF(0), tmp_ptr);
+          VP_PARAM_STR(share, "table_name_list", tgt_table_name_list);
+          error_num = param_string_parse.print_param_error();
           goto error;
         case 16:
-          VP_PARAM_INT_WITH_MAX("multi_range_mode", multi_range_mode, 0, 1);
-          VP_PARAM_STR("default_database", tgt_default_db_name);
-          VP_PARAM_INT_WITH_MAX("table_count_mode", table_count_mode, 0, 1);
-          error_num = ER_VP_INVALID_TABLE_INFO_NUM;
-          my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
-            MYF(0), tmp_ptr);
+          VP_PARAM_INT_WITH_MAX(share, "multi_range_mode", multi_range_mode,
+            0, 1);
+          VP_PARAM_STR(share, "default_database", tgt_default_db_name);
+          VP_PARAM_INT_WITH_MAX(share, "table_count_mode", table_count_mode,
+            0, 1);
+          error_num = param_string_parse.print_param_error();
           goto error;
         case 17:
-          VP_PARAM_INT_WITH_MAX("choose_table_mode", choose_table_mode, 0, 1);
-          VP_PARAM_STR("table_name_prefix", tgt_table_name_prefix);
-          VP_PARAM_STR("table_name_suffix", tgt_table_name_suffix);
-          error_num = ER_VP_INVALID_TABLE_INFO_NUM;
-          my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
-            MYF(0), tmp_ptr);
+          VP_PARAM_INT_WITH_MAX(share, "choose_table_mode", choose_table_mode,
+            0, 1);
+          VP_PARAM_STR(share, "table_name_prefix", tgt_table_name_prefix);
+          VP_PARAM_STR(share, "table_name_suffix", tgt_table_name_suffix);
+          error_num = param_string_parse.print_param_error();
           goto error;
         case 18:
-          VP_PARAM_INT_WITH_MAX("pk_correspond_mode", pk_correspond_mode, 0,
-            1);
-          VP_PARAM_INT_WITH_MAX("allow_bulk_autoinc", allow_bulk_autoinc, 0,
-            1);
-          error_num = ER_VP_INVALID_TABLE_INFO_NUM;
-          my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
-            MYF(0), tmp_ptr);
+          VP_PARAM_INT_WITH_MAX(share, "pk_correspond_mode",
+            pk_correspond_mode, 0, 1);
+          VP_PARAM_INT_WITH_MAX(share, "allow_bulk_autoinc",
+            allow_bulk_autoinc, 0, 1);
+          error_num = param_string_parse.print_param_error();
           goto error;
         case 19:
-          VP_PARAM_INT_WITH_MAX("support_table_cache", support_table_cache, 0,
-            2);
-          error_num = ER_VP_INVALID_TABLE_INFO_NUM;
-          my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
-            MYF(0), tmp_ptr);
+          VP_PARAM_INT_WITH_MAX(share, "support_table_cache",
+            support_table_cache, 0, 2);
+          error_num = param_string_parse.print_param_error();
           goto error;
         case 20:
-          VP_PARAM_INT("auto_increment_table", auto_increment_table, 1);
-          error_num = ER_VP_INVALID_TABLE_INFO_NUM;
-          my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
-            MYF(0), tmp_ptr);
+          VP_PARAM_INT(share, "auto_increment_table", auto_increment_table, 1);
+          error_num = param_string_parse.print_param_error();
           goto error;
         case 23:
-          VP_PARAM_INT("infomation_source_table", info_src_table, 0);
-          VP_PARAM_INT_WITH_MAX("zero_record_update_mode",
+          VP_PARAM_INT(share, "infomation_source_table", info_src_table, 0);
+          VP_PARAM_INT_WITH_MAX(share, "zero_record_update_mode",
             zero_record_update_mode, 0, 1);
-          error_num = ER_VP_INVALID_TABLE_INFO_NUM;
-          my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
-            MYF(0), tmp_ptr);
+          error_num = param_string_parse.print_param_error();
           goto error;
         case 24:
-          VP_PARAM_STR("choose_ignore_table_list", choose_ignore_table_list);
-          error_num = ER_VP_INVALID_TABLE_INFO_NUM;
-          my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
-            MYF(0), tmp_ptr);
+          VP_PARAM_STR(share, "choose_ignore_table_list",
+            choose_ignore_table_list);
+          error_num = param_string_parse.print_param_error();
           goto error;
         case 26:
-          VP_PARAM_INT_WITH_MAX("choose_table_mode_for_lock",
+          VP_PARAM_INT_WITH_MAX(share, "choose_table_mode_for_lock",
             choose_table_mode_for_lock, 0, 1);
-          error_num = ER_VP_INVALID_TABLE_INFO_NUM;
-          my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
-            MYF(0), tmp_ptr);
+          error_num = param_string_parse.print_param_error();
           goto error;
         case 27:
-          VP_PARAM_INT_WITH_MAX("allow_different_column_type",
+          VP_PARAM_INT_WITH_MAX(share, "allow_different_column_type",
             allow_different_column_type, 0, 1);
-          error_num = ER_VP_INVALID_TABLE_INFO_NUM;
-          my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
-            MYF(0), tmp_ptr);
+          error_num = param_string_parse.print_param_error();
           goto error;
         case 33:
-          VP_PARAM_STR("choose_ignore_table_list_for_lock",
+          VP_PARAM_STR(share, "choose_ignore_table_list_for_lock",
             choose_ignore_table_list_for_lock);
-          error_num = ER_VP_INVALID_TABLE_INFO_NUM;
-          my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
-            MYF(0), tmp_ptr);
+          error_num = param_string_parse.print_param_error();
           goto error;
         default:
-          error_num = ER_VP_INVALID_TABLE_INFO_NUM;
-          my_printf_error(error_num, ER_VP_INVALID_TABLE_INFO_STR,
-            MYF(0), tmp_ptr);
+          error_num = param_string_parse.print_param_error();
           goto error;
       }
+
+      /* Verify that the remainder of the parameter value is whitespace */
+      if ((error_num = param_string_parse.has_extra_parameter_values()))
+          goto error;
     }
   }
 
@@ -1388,17 +1569,23 @@ char *vp_create_table_name_string(
 #ifdef WITH_PARTITION_STORAGE_ENGINE
 void vp_get_partition_info(
   const char *table_name,
-  const TABLE *table,
+  uint table_name_length,
+  const TABLE_SHARE *table_share,
+  partition_info *part_info,
   partition_element **part_elem,
   partition_element **sub_elem
 ) {
-  char tmp_name[FN_LEN];
-  partition_info *part_info = table->part_info;
+  char tmp_name[FN_REFLEN + 1];
+  partition_element *tmp_part_elem = NULL, *tmp_sub_elem = NULL;
+  bool tmp_flg = FALSE, tmp_find_flg = FALSE;
   DBUG_ENTER("vp_get_partition_info");
   *part_elem = NULL;
   *sub_elem = NULL;
   if (!part_info)
     DBUG_VOID_RETURN;
+
+  if (!memcmp(table_name + table_name_length - 5, "#TMP#", 5))
+    tmp_flg = TRUE;
 
   DBUG_PRINT("info",("vp table_name=%s", table_name));
   List_iterator<partition_element> part_it(part_info->partitions);
@@ -1409,20 +1596,54 @@ void vp_get_partition_info(
       List_iterator<partition_element> sub_it((*part_elem)->subpartitions);
       while ((*sub_elem = sub_it++))
       {
-        create_subpartition_name(tmp_name, table->s->path.str,
+        if (VP_create_subpartition_name(
+          tmp_name, FN_REFLEN + 1, table_share->path.str,
           (*part_elem)->partition_name, (*sub_elem)->partition_name,
-          NORMAL_PART_NAME);
-        DBUG_PRINT("info",("vp tmp_name=%s", tmp_name));
-        if (!strcmp(table_name, tmp_name))
+          NORMAL_PART_NAME))
+        {
           DBUG_VOID_RETURN;
+        }
+        DBUG_PRINT("info",("vp tmp_name=%s", tmp_name));
+        if (!memcmp(table_name, tmp_name, table_name_length + 1))
+          DBUG_VOID_RETURN;
+        if (
+          tmp_flg &&
+          *(tmp_name + table_name_length - 5) == '\0' &&
+          !memcmp(table_name, tmp_name, table_name_length - 5)
+        ) {
+          tmp_part_elem = *part_elem;
+          tmp_sub_elem = *sub_elem;
+          tmp_flg = FALSE;
+          tmp_find_flg = TRUE;
+        }
       }
     } else {
-      create_partition_name(tmp_name, table->s->path.str,
-        (*part_elem)->partition_name, NORMAL_PART_NAME, TRUE);
-      DBUG_PRINT("info",("vp tmp_name=%s", tmp_name));
-      if (!strcmp(table_name, tmp_name))
+      if (VP_create_partition_name(
+        tmp_name, FN_REFLEN + 1, table_share->path.str,
+        (*part_elem)->partition_name, NORMAL_PART_NAME, TRUE))
+      {
         DBUG_VOID_RETURN;
+      }
+      DBUG_PRINT("info",("vp tmp_name=%s", tmp_name));
+      if (!memcmp(table_name, tmp_name, table_name_length + 1))
+        DBUG_VOID_RETURN;
+      if (
+        tmp_flg &&
+        *(tmp_name + table_name_length - 5) == '\0' &&
+        !memcmp(table_name, tmp_name, table_name_length - 5)
+      ) {
+        tmp_part_elem = *part_elem;
+        tmp_flg = FALSE;
+        tmp_find_flg = TRUE;
+      }
     }
+  }
+  if (tmp_find_flg)
+  {
+    *part_elem = tmp_part_elem;
+    *sub_elem = tmp_sub_elem;
+    DBUG_PRINT("info",("vp tmp find"));
+    DBUG_VOID_RETURN;
   }
   *part_elem = NULL;
   *sub_elem = NULL;
@@ -1491,8 +1712,8 @@ int vp_create_table_list(
     if ((tmp_ptr2 = strchr(tmp_ptr, ' ')))
       *tmp_ptr2 = '\0';
 
-    share->tgt_db_name[roop_count] =
-      share->part_tables[roop_count].db = tmp_name_ptr;
+    VP_TABLE_LIST_db_str(&share->part_tables[roop_count]) =
+      share->tgt_db_name[roop_count] = tmp_name_ptr;
 
     if ((tmp_ptr3 = strchr(tmp_ptr, '.')))
     {
@@ -1502,18 +1723,19 @@ int vp_create_table_list(
       memcpy(tmp_name_ptr, tmp_ptr, length + 1);
       tmp_name_ptr += length + 1;
       tmp_ptr = tmp_ptr3 + 1;
-      share->part_tables[roop_count].db_length = length;
+      VP_TABLE_LIST_db_length(&share->part_tables[roop_count]) = length;
     } else {
       memcpy(tmp_name_ptr, share->tgt_default_db_name,
         share->tgt_default_db_name_length + 1);
       tmp_name_ptr += share->tgt_default_db_name_length + 1;
-      share->part_tables[roop_count].db_length =
+      VP_TABLE_LIST_db_length(&share->part_tables[roop_count]) =
         share->tgt_default_db_name_length;
     }
 
-    share->tgt_table_name[roop_count] =
-      share->part_tables[roop_count].alias =
-      share->part_tables[roop_count].table_name = tmp_name_ptr;
+    VP_TABLE_LIST_alias_str(&share->part_tables[roop_count]) =
+      VP_TABLE_LIST_table_name_str(&share->part_tables[roop_count]) =
+      share->tgt_table_name[roop_count] =
+      tmp_name_ptr;
     memcpy(tmp_name_ptr, share->tgt_table_name_prefix,
       share->tgt_table_name_prefix_length);
     tmp_name_ptr += share->tgt_table_name_prefix_length;
@@ -1526,14 +1748,17 @@ int vp_create_table_list(
       share->tgt_table_name_suffix_length + 1);
     tmp_name_ptr += share->tgt_table_name_suffix_length + 1;
 
-    share->part_tables[roop_count].table_name_length =
+#ifdef VP_TABLE_LIST_ALIAS_HAS_LENGTH
+    VP_TABLE_LIST_alias_length(&share->part_tables[roop_count]) =
+#endif
+    VP_TABLE_LIST_table_name_length(&share->part_tables[roop_count]) =
       share->tgt_table_name_prefix_length + length +
       share->tgt_table_name_suffix_length;
 
     DBUG_PRINT("info",("vp db=%s",
-      share->part_tables[roop_count].db));
+      VP_TABLE_LIST_db_str(&share->part_tables[roop_count])));
     DBUG_PRINT("info",("vp table_name=%s",
-      share->part_tables[roop_count].table_name));
+      VP_TABLE_LIST_table_name_str(&share->part_tables[roop_count])));
 
     if (!tmp_ptr2)
       break;

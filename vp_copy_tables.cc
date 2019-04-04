@@ -1,4 +1,5 @@
-/* Copyright (C) 2009-2015 Kentoku Shiba
+/* Copyright (C) 2009-2019 Kentoku Shiba
+   Copyright (C) 2019 MariaDB corp
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -16,6 +17,7 @@
 #define MYSQL_SERVER 1
 #include <my_global.h>
 #include "mysql_version.h"
+#include "vp_environ.h"
 #if MYSQL_VERSION_ID < 50500
 #include "mysql_priv.h"
 #include <mysql/plugin.h>
@@ -222,141 +224,6 @@ int vp_udf_copy_tables_create_table_list(
   DBUG_RETURN(0);
 }
 
-#define VP_PARAM_STR_LEN(name) name ## _length
-#define VP_PARAM_STR(title_name, param_name) \
-  if (!strncasecmp(tmp_ptr, title_name, title_length)) \
-  { \
-    DBUG_PRINT("info",("vp "title_name" start")); \
-    if (!copy_tables->param_name) \
-    { \
-      if ((copy_tables->param_name = vp_get_string_between_quote( \
-        start_ptr, TRUE))) \
-        copy_tables->VP_PARAM_STR_LEN(param_name) = \
-          strlen(copy_tables->param_name); \
-      else { \
-        error_num = ER_VP_INVALID_UDF_PARAM_NUM; \
-        my_printf_error(error_num, ER_VP_INVALID_UDF_PARAM_STR, \
-          MYF(0), tmp_ptr); \
-        goto error; \
-      } \
-      DBUG_PRINT("info",("vp "title_name"=%s", copy_tables->param_name)); \
-    } \
-    break; \
-  }
-#define VP_PARAM_HINT_WITH_MAX(title_name, param_name, check_length, max_size, min_val, max_val) \
-  if (!strncasecmp(tmp_ptr, title_name, check_length)) \
-  { \
-    DBUG_PRINT("info",("vp "title_name" start")); \
-    DBUG_PRINT("info",("vp max_size=%d", max_size)); \
-    int hint_num = atoi(tmp_ptr + check_length) - 1; \
-    DBUG_PRINT("info",("vp hint_num=%d", hint_num)); \
-    DBUG_PRINT("info",("vp copy_tables->param_name=%x", \
-      copy_tables->param_name)); \
-    if (copy_tables->param_name) \
-    { \
-      if (hint_num < 0 || hint_num >= max_size) \
-      { \
-        error_num = ER_VP_INVALID_UDF_PARAM_NUM; \
-        my_printf_error(error_num, ER_VP_INVALID_UDF_PARAM_STR, \
-          MYF(0), tmp_ptr); \
-        goto error; \
-      } else if (copy_tables->param_name[hint_num] != -1) \
-        break; \
-      char *hint_str = vp_get_string_between_quote(start_ptr, FALSE); \
-      if (hint_str) \
-      { \
-        copy_tables->param_name[hint_num] = atoi(hint_str); \
-        if (copy_tables->param_name[hint_num] < min_val) \
-          copy_tables->param_name[hint_num] = min_val; \
-        else if (copy_tables->param_name[hint_num] > max_val) \
-          copy_tables->param_name[hint_num] = max_val; \
-      } else { \
-        error_num = ER_VP_INVALID_UDF_PARAM_NUM; \
-        my_printf_error(error_num, ER_VP_INVALID_UDF_PARAM_STR, \
-          MYF(0), tmp_ptr); \
-        goto error; \
-      } \
-      DBUG_PRINT("info",("vp "title_name"[%d]=%d", hint_num, \
-        copy_tables->param_name[hint_num])); \
-    } else { \
-      error_num = ER_VP_INVALID_UDF_PARAM_NUM; \
-      my_printf_error(error_num, ER_VP_INVALID_UDF_PARAM_STR, \
-        MYF(0), tmp_ptr); \
-      goto error; \
-    } \
-    break; \
-  }
-#define VP_PARAM_INT_WITH_MAX(title_name, param_name, min_val, max_val) \
-  if (!strncasecmp(tmp_ptr, title_name, title_length)) \
-  { \
-    DBUG_PRINT("info",("vp "title_name" start")); \
-    if (copy_tables->param_name == -1) \
-    { \
-      if ((tmp_ptr2 = vp_get_string_between_quote( \
-        start_ptr, FALSE))) \
-      { \
-        copy_tables->param_name = atoi(tmp_ptr2); \
-        if (copy_tables->param_name < min_val) \
-          copy_tables->param_name = min_val; \
-        else if (copy_tables->param_name > max_val) \
-          copy_tables->param_name = max_val; \
-      } else { \
-        error_num = ER_VP_INVALID_UDF_PARAM_NUM; \
-        my_printf_error(error_num, ER_VP_INVALID_UDF_PARAM_STR, \
-          MYF(0), tmp_ptr); \
-        goto error; \
-      } \
-      DBUG_PRINT("info",("vp "title_name"=%d", copy_tables->param_name)); \
-    } \
-    break; \
-  }
-#define VP_PARAM_INT(title_name, param_name, min_val) \
-  if (!strncasecmp(tmp_ptr, title_name, title_length)) \
-  { \
-    DBUG_PRINT("info",("vp "title_name" start")); \
-    if (copy_tables->param_name == -1) \
-    { \
-      if ((tmp_ptr2 = vp_get_string_between_quote( \
-        start_ptr, FALSE))) \
-      { \
-        copy_tables->param_name = atoi(tmp_ptr2); \
-        if (copy_tables->param_name < min_val) \
-          copy_tables->param_name = min_val; \
-      } else { \
-        error_num = ER_VP_INVALID_UDF_PARAM_NUM; \
-        my_printf_error(error_num, ER_VP_INVALID_UDF_PARAM_STR, \
-          MYF(0), tmp_ptr); \
-        goto error; \
-      } \
-      DBUG_PRINT("info",("vp "title_name"=%d", copy_tables->param_name)); \
-    } \
-    break; \
-  }
-#define VP_PARAM_LONGLONG(title_name, param_name, min_val) \
-  if (!strncasecmp(tmp_ptr, title_name, title_length)) \
-  { \
-    DBUG_PRINT("info",("vp "title_name" start")); \
-    if (copy_tables->param_name == -1) \
-    { \
-      if ((tmp_ptr2 = vp_get_string_between_quote( \
-        start_ptr, FALSE))) \
-      { \
-        copy_tables->param_name = \
-          my_strtoll10(tmp_ptr2, (char**) NULL, &error_num); \
-        if (copy_tables->param_name < min_val) \
-          copy_tables->param_name = min_val; \
-      } else { \
-        error_num = ER_VP_INVALID_UDF_PARAM_NUM; \
-        my_printf_error(error_num, ER_VP_INVALID_UDF_PARAM_STR, \
-          MYF(0), tmp_ptr); \
-        goto error; \
-      } \
-      DBUG_PRINT("info",("vp "title_name"=%lld", \
-        copy_tables->param_name)); \
-    } \
-    break; \
-  }
-
 int vp_udf_parse_copy_tables_param(
   VP_COPY_TABLES *copy_tables,
   char *param,
@@ -367,6 +234,7 @@ int vp_udf_parse_copy_tables_param(
   char *sprit_ptr[2];
   char *tmp_ptr, *tmp_ptr2, *start_ptr;
   int title_length;
+  VP_PARAM_STRING_PARSE param_string_parse;
   DBUG_ENTER("vp_udf_parse_copy_tables_param");
   copy_tables->bulk_insert_interval = -1;
   copy_tables->bulk_insert_rows = -1;
@@ -387,6 +255,7 @@ int vp_udf_parse_copy_tables_param(
   DBUG_PRINT("info",("vp param_string=%s", param_string));
 
   sprit_ptr[0] = param_string;
+  param_string_parse.init(param_string, ER_VP_INVALID_UDF_PARAM_NUM);
   while (sprit_ptr[0])
   {
     if ((sprit_ptr[1] = strchr(sprit_ptr[0], ',')))
@@ -413,49 +282,50 @@ int vp_udf_parse_copy_tables_param(
       title_length++;
       start_ptr++;
     }
+    param_string_parse.set_param_title(tmp_ptr, tmp_ptr + title_length);
 
     switch (title_length)
     {
       case 0:
+        error_num = param_string_parse.print_param_error();
+        if (error_num)
+          goto error;
         continue;
       case 3:
-        VP_PARAM_INT("bii", bulk_insert_interval, 0);
-        VP_PARAM_LONGLONG("bir", bulk_insert_rows, 1);
-        VP_PARAM_STR("ddb", default_database);
-        VP_PARAM_INT_WITH_MAX("sai", suppress_autoinc, 0, 1);
-        VP_PARAM_STR("tnp", table_name_prefix);
-        VP_PARAM_STR("tns", table_name_suffix);
-        error_num = ER_VP_INVALID_UDF_PARAM_NUM;
-        my_printf_error(error_num, ER_VP_INVALID_UDF_PARAM_STR,
-          MYF(0), tmp_ptr);
+        VP_PARAM_INT(copy_tables, "bii", bulk_insert_interval, 0);
+        VP_PARAM_LONGLONG(copy_tables, "bir", bulk_insert_rows, 1);
+        VP_PARAM_STR(copy_tables, "ddb", default_database);
+        VP_PARAM_INT_WITH_MAX(copy_tables, "sai", suppress_autoinc, 0, 1);
+        VP_PARAM_STR(copy_tables, "tnp", table_name_prefix);
+        VP_PARAM_STR(copy_tables, "tns", table_name_suffix);
+        error_num = param_string_parse.print_param_error();
         goto error;
       case 16:
-        VP_PARAM_LONGLONG("bulk_insert_rows", bulk_insert_rows, 1);
-        VP_PARAM_STR("default_database", default_database);
-        VP_PARAM_INT_WITH_MAX("suppress_autoinc", suppress_autoinc, 0, 1);
-        error_num = ER_VP_INVALID_UDF_PARAM_NUM;
-        my_printf_error(error_num, ER_VP_INVALID_UDF_PARAM_STR,
-          MYF(0), tmp_ptr);
+        VP_PARAM_LONGLONG(copy_tables, "bulk_insert_rows", bulk_insert_rows,
+          1);
+        VP_PARAM_STR(copy_tables, "default_database", default_database);
+        VP_PARAM_INT_WITH_MAX(copy_tables, "suppress_autoinc",
+          suppress_autoinc, 0, 1);
+        error_num = param_string_parse.print_param_error();
         goto error;
       case 17:
-        VP_PARAM_STR("table_name_prefix", table_name_prefix);
-        VP_PARAM_STR("table_name_suffix", table_name_suffix);
-        error_num = ER_VP_INVALID_UDF_PARAM_NUM;
-        my_printf_error(error_num, ER_VP_INVALID_UDF_PARAM_STR,
-          MYF(0), tmp_ptr);
+        VP_PARAM_STR(copy_tables, "table_name_prefix", table_name_prefix);
+        VP_PARAM_STR(copy_tables, "table_name_suffix", table_name_suffix);
+        error_num = param_string_parse.print_param_error();
         goto error;
       case 20:
-        VP_PARAM_INT("bulk_insert_interval", bulk_insert_interval, 0);
-        error_num = ER_VP_INVALID_UDF_PARAM_NUM;
-        my_printf_error(error_num, ER_VP_INVALID_UDF_PARAM_STR,
-          MYF(0), tmp_ptr);
+        VP_PARAM_INT(copy_tables, "bulk_insert_interval", bulk_insert_interval,
+          0);
+        error_num = param_string_parse.print_param_error();
         goto error;
       default:
-        error_num = ER_VP_INVALID_UDF_PARAM_NUM;
-        my_printf_error(error_num, ER_VP_INVALID_UDF_PARAM_STR,
-          MYF(0), tmp_ptr);
+        error_num = param_string_parse.print_param_error();
         goto error;
     }
+
+    /* Verify that the remainder of the parameter value is whitespace */
+    if ((error_num = param_string_parse.has_extra_parameter_values()))
+      goto error;
   }
 
 set_default:
@@ -483,10 +353,10 @@ int vp_udf_set_copy_tables_param_default(
   if (!copy_tables->default_database)
   {
     DBUG_PRINT("info",("vp create default default_database"));
-    copy_tables->default_database_length = copy_tables->thd->db_length;
+    copy_tables->default_database_length = VP_THD_db_length(copy_tables->thd);
     if (
       !(copy_tables->default_database = vp_create_string(
-        copy_tables->thd->db,
+        VP_THD_db_str(copy_tables->thd),
         copy_tables->default_database_length))
     ) {
       my_error(ER_OUT_OF_RESOURCES, MYF(0), HA_ERR_OUT_OF_MEM);
@@ -649,10 +519,15 @@ long long vp_copy_tables_body(
     goto error;
 
   table_list = &copy_tables->vp_table_list;
-  table_list->db = copy_tables->vp_db_name;
-  table_list->db_length = copy_tables->vp_db_name_length;
-  table_list->alias = table_list->table_name = copy_tables->vp_table_name;
-  table_list->table_name_length = copy_tables->vp_table_name_length;
+  VP_TABLE_LIST_db_str(table_list) = copy_tables->vp_db_name;
+  VP_TABLE_LIST_db_length(table_list) = copy_tables->vp_db_name_length;
+  VP_TABLE_LIST_alias_str(table_list) =
+    VP_TABLE_LIST_table_name_str(table_list) = copy_tables->vp_table_name;
+#ifdef VP_TABLE_LIST_ALIAS_HAS_LENGTH
+  VP_TABLE_LIST_alias_length(table_list) =
+#endif
+    VP_TABLE_LIST_table_name_length(table_list) =
+    copy_tables->vp_table_name_length;
   table_list->lock_type = TL_WRITE;
 
   reprepare_observer_backup = thd->m_reprepare_observer;
@@ -662,8 +537,8 @@ long long vp_copy_tables_body(
 #else
   table_list->mdl_request.init(
     MDL_key::TABLE,
-    table_list->db,
-    table_list->table_name,
+    VP_TABLE_LIST_db_str(table_list),
+    VP_TABLE_LIST_table_name_str(table_list),
     MDL_SHARED_WRITE,
     MDL_TRANSACTION
   );
@@ -711,10 +586,13 @@ change_table_version:
       for (roop_count2 = 0; roop_count2 < share->table_count; roop_count2++)
       {
         if (
-          part_tables[roop_count2].db_length == db_name_length &&
-          part_tables[roop_count2].table_name_length == table_name_length &&
-          !memcmp(part_tables[roop_count2].db, db_name, db_name_length) &&
-          !memcmp(part_tables[roop_count2].table_name,
+          VP_TABLE_LIST_db_length(&part_tables[roop_count2]) ==
+            db_name_length &&
+          VP_TABLE_LIST_table_name_length(&part_tables[roop_count2]) ==
+            table_name_length &&
+          !memcmp(VP_TABLE_LIST_db_str(&part_tables[roop_count2]), db_name,
+            db_name_length) &&
+          !memcmp(VP_TABLE_LIST_table_name_str(&part_tables[roop_count2]),
             table_name, table_name_length)
         ) {
           part_idx = roop_count;
@@ -741,10 +619,12 @@ change_table_version:
     for (roop_count2 = 0; roop_count2 < share->table_count; roop_count2++)
     {
       if (
-        part_tables[roop_count2].db_length == db_name_length &&
-        part_tables[roop_count2].table_name_length == table_name_length &&
-        !memcmp(part_tables[roop_count2].db, db_name, db_name_length) &&
-        !memcmp(part_tables[roop_count2].table_name,
+        VP_TABLE_LIST_db_length(&part_tables[roop_count2]) == db_name_length &&
+        VP_TABLE_LIST_table_name_length(&part_tables[roop_count2]) ==
+          table_name_length &&
+        !memcmp(VP_TABLE_LIST_db_str(&part_tables[roop_count2]), db_name,
+          db_name_length) &&
+        !memcmp(VP_TABLE_LIST_table_name_str(&part_tables[roop_count2]),
           table_name, table_name_length)
       ) {
         copy_tables->table_idx[0][0] = roop_count2;
@@ -786,10 +666,13 @@ change_table_version:
       for (roop_count3 = 0; roop_count3 < share->table_count; roop_count3++)
       {
         if (
-          part_tables[roop_count3].db_length == db_name_length &&
-          part_tables[roop_count3].table_name_length == table_name_length &&
-          !memcmp(part_tables[roop_count3].db, db_name, db_name_length) &&
-          !memcmp(part_tables[roop_count3].table_name,
+          VP_TABLE_LIST_db_length(&part_tables[roop_count3]) ==
+            db_name_length &&
+          VP_TABLE_LIST_table_name_length(&part_tables[roop_count3]) ==
+            table_name_length &&
+          !memcmp(VP_TABLE_LIST_db_str(&part_tables[roop_count3]), db_name,
+            db_name_length) &&
+          !memcmp(VP_TABLE_LIST_table_name_str(&part_tables[roop_count3]),
             table_name, table_name_length)
         ) {
           copy_tables->table_idx[roop_count][roop_count2] = roop_count3;
@@ -1013,7 +896,7 @@ change_table_version:
       {
         if (vp_table->is_fatal_error(error_num, HA_CHECK_DUP))
         {
-          DBUG_PRINT("info",("spider error_num=%d", error_num));
+          DBUG_PRINT("info",("vp error_num=%d", error_num));
           vp_table->print_error(error_num, MYF(0));
           break;
         } else
@@ -1090,8 +973,8 @@ first_close:
     table_list->lock_type = TL_WRITE;
     table_list->mdl_request.init(
       MDL_key::TABLE,
-      table_list->db,
-      table_list->table_name,
+      VP_TABLE_LIST_db_str(table_list),
+      VP_TABLE_LIST_table_name_str(table_list),
       MDL_SHARED_WRITE,
       MDL_TRANSACTION
     );
