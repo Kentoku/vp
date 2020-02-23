@@ -1,4 +1,4 @@
-/* Copyright (C) 2009-201 Kentoku Shiba
+/* Copyright (C) 2009-2020 Kentoku Shiba
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -524,6 +524,9 @@ public:
   void restore_auto_increment(
     ulonglong prev_insert_id
   );
+#ifdef VP_HANDER_HAS_2_RESTORE_AUTO_INCREMENT
+  void restore_auto_increment();
+#endif
   void release_auto_increment();
   int reset_auto_increment(
     ulonglong value
@@ -545,7 +548,7 @@ public:
     bool abort
   );
   int write_row(
-    uchar *buf
+    VP_HANDER_WRITE_ROW_FIRST_ARGUMENT_TYPE *buf
   );
 #ifdef HA_CAN_BULK_ACCESS
   int pre_write_row(
@@ -643,11 +646,13 @@ public:
     uint range_count,
     bool sorted,
     uchar *new_data,
-    ha_rows *update_rows
+    ha_rows *update_rows,
+    ha_rows *found_rows
   );
 #else
   int direct_update_rows(
-    ha_rows *update_rows
+    ha_rows *update_rows,
+    ha_rows *found_rows
   );
 #endif
 #ifdef HA_CAN_BULK_ACCESS
@@ -657,7 +662,8 @@ public:
     uint range_count,
     bool sorted,
     uchar *new_data,
-    uint *update_rows
+    uint *update_rows,
+    uint *found_rows
   );
 #else
   int pre_direct_update_rows();

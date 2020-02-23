@@ -1,5 +1,5 @@
-/* Copyright (C) 2009-2019 Kentoku Shiba
-   Copyright (C) 2019 MariaDB corp
+/* Copyright (C) 2009-2020 Kentoku Shiba
+   Copyright (C) 2019-2020 MariaDB corp
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -4958,6 +4958,16 @@ void ha_vp::restore_auto_increment(
   DBUG_VOID_RETURN;
 }
 
+#ifdef VP_HANDER_HAS_2_RESTORE_AUTO_INCREMENT
+void ha_vp::restore_auto_increment()
+{
+  DBUG_ENTER("ha_vp::restore_auto_increment");
+  DBUG_PRINT("info",("vp this=%p", this));
+  handler::restore_auto_increment();
+  DBUG_VOID_RETURN;
+}
+#endif
+
 void ha_vp::release_auto_increment()
 {
   int roop_count;
@@ -5084,7 +5094,7 @@ int ha_vp::end_bulk_insert(
 }
 
 int ha_vp::write_row(
-  uchar *buf
+  VP_HANDER_WRITE_ROW_FIRST_ARGUMENT_TYPE *buf
 ) {
   int error_num = 0, roop_count, roop_count2, first_insert = -1;
   uint16 field_index;
@@ -6652,7 +6662,8 @@ int ha_vp::direct_update_rows(
   uint range_count,
   bool sorted,
   uchar *new_data,
-  ha_rows *update_rows
+  ha_rows *update_rows,
+  ha_rows *found_rows
 ) {
   int error_num, error_num2 = 0, roop_count;
   KEY_MULTI_RANGE *child_ranges = NULL;
@@ -6710,7 +6721,7 @@ int ha_vp::direct_update_rows(
 #endif
       error_num = file->
         ha_direct_update_rows(child_ranges, range_count, sorted,
-        part_tables[roop_count].table->record[0], update_rows);
+        part_tables[roop_count].table->record[0], update_rows, found_rows);
 #if defined(HAVE_HANDLERSOCKET)
       if (ranges)
       {
@@ -6734,7 +6745,8 @@ int ha_vp::direct_update_rows(
 }
 #else
 int ha_vp::direct_update_rows(
-  ha_rows *update_rows
+  ha_rows *update_rows,
+  ha_rows *found_rows
 ) {
   int error_num, error_num2 = 0, roop_count;
   handler *file;
@@ -6754,7 +6766,7 @@ int ha_vp::direct_update_rows(
       if (do_init && (error_num = file->ha_rnd_init(TRUE)))
         DBUG_RETURN(error_num);
       error_num = file->
-        ha_direct_update_rows(update_rows);
+        ha_direct_update_rows(update_rows, found_rows);
       if (do_init)
         error_num2 = file->ha_rnd_end();
       if (!error_num)
@@ -6774,7 +6786,8 @@ int ha_vp::pre_direct_update_rows(
   uint range_count,
   bool sorted,
   uchar *new_data,
-  uint *update_rows
+  uint *update_rows,
+  uint *found_rows
 ) {
   int error_num, error_num2 = 0, roop_count;
   KEY_MULTI_RANGE *child_ranges = NULL;
@@ -6828,7 +6841,7 @@ int ha_vp::pre_direct_update_rows(
 #endif
       error_num = file->
         ha_pre_direct_update_rows(child_ranges, range_count, sorted,
-        part_tables[roop_count].table->record[0], update_rows);
+        part_tables[roop_count].table->record[0], update_rows, found_rows);
 #if defined(HAVE_HANDLERSOCKET)
       if (ranges)
       {
@@ -9471,6 +9484,7 @@ int ha_vp::get_child_record_by_idx(
               DBUG_PRINT("info", ("vp ((Field_blob *)field2)->get_length()=%u",
                 ((Field_blob *)field2)->get_length()));
 #ifndef DBUG_OFF
+#ifdef VP_HAS_FIELD_GEOM
               if (field2->type() == MYSQL_TYPE_GEOMETRY)
               {
                 Field_geom *g1 = (Field_geom *) field;
@@ -9516,6 +9530,7 @@ int ha_vp::get_child_record_by_idx(
                   }
                 }
               }
+#endif
 #endif
             } else {
               DBUG_PRINT("info", ("vp blob convert"));
@@ -11382,7 +11397,7 @@ int ha_vp::open_item_ref(
     if (
       (*(item_ref->ref))->type() != Item::CACHE_ITEM &&
       item_ref->ref_type() != Item_ref::VIEW_REF &&
-      !item_ref->table_name &&
+      !VP_item_ref_table_name_str(item_ref) &&
       VP_item_name_str(item_ref) &&
       item_ref->alias_name_used
     )

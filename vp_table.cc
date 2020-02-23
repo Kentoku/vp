@@ -1,5 +1,5 @@
-/* Copyright (C) 2009-2019 Kentoku Shiba
-   Copyright (C) 2019 MariaDB corp
+/* Copyright (C) 2009-2020 Kentoku Shiba
+   Copyright (C) 2019-2020 MariaDB corp
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -1388,7 +1388,9 @@ int vp_db_init(
   DBUG_ENTER("vp_db_init");
   vp_hton_ptr = vp_hton;
 
+#ifdef VP_HTON_HAS_STATE
   vp_hton->state = SHOW_OPTION_YES;
+#endif
 #ifdef PARTITION_HAS_EXTRA_ATTACH_CHILDREN
   vp_hton->flags = HTON_NO_FLAGS;
 #else
@@ -1982,7 +1984,7 @@ int vp_correspond_columns(
 #else
           Create_field create_field(field2, NULL);
 #endif
-          if (!field->is_equal(&create_field))
+          if (!VP_field_is_equal(field, create_field))
           {
             DBUG_PRINT("info",("vp different column"));
             different_column = TRUE;

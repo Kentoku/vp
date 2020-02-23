@@ -1,5 +1,5 @@
-/* Copyright (C) 2019 Kentoku Shiba
-   Copyright (C) 2019 MariaDB corp
+/* Copyright (C) 2019-2020 Kentoku Shiba
+   Copyright (C) 2019-2020 MariaDB corp
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -61,6 +61,21 @@
 #define VP_alter_table_operations alter_table_operations
 #else
 #define VP_alter_table_operations uint
+#endif
+
+#if defined(MARIADB_BASE_VERSION) && MYSQL_VERSION_ID >=	100500
+#define VP_HANDER_HAS_2_RESTORE_AUTO_INCREMENT
+#define VP_HANDER_WRITE_ROW_FIRST_ARGUMENT_TYPE const uchar
+#define VP_field_is_equal(A,B) (A)->is_equal(B)
+#define VP_item_ref_table_name_str(A) (A)->table_name.str
+#define VP_item_ref_table_name_length(A) (A)->table_name.length
+#else
+#define VP_HANDER_WRITE_ROW_FIRST_ARGUMENT_TYPE uchar
+#define VP_HTON_HAS_STATE
+#define VP_field_is_equal(A,B) (A)->is_equal(&(B))
+#define VP_HAS_FIELD_GEOM
+#define VP_item_ref_table_name_str(A) (A)->table_name
+#define VP_item_ref_table_name_length(A) strlen((A)->table_name)
 #endif
 
 #endif /* VP_ENVIRON_INCLUDED */
